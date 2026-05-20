@@ -2,8 +2,8 @@
 Unit tests for MetricsCalculator module.
 """
 
-import pytest
 import pandas as pd
+
 from src.strategy.metrics import MetricsCalculator
 
 
@@ -69,3 +69,11 @@ class TestMetricsCalculator:
         assert "profit_factor" in summary
         assert summary["total_trades"] == 5
         assert abs(summary["total_return_pct"] - 3.7) < 0.1  # (10370-10000)/10000 * 100
+
+    def test_summarize_handles_missing_equity_curve(self):
+        summary = MetricsCalculator.summarize([{"pnl": 10}], None)
+
+        assert summary["total_trades"] == 1
+        assert summary["start_value"] == 0.0
+        assert summary["end_value"] == 0.0
+        assert summary["total_return_pct"] == 0.0

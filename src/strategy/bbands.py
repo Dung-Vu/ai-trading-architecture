@@ -1,7 +1,6 @@
 """Bollinger Bands mean-reversion strategy with volume confirmation."""
 
 from loguru import logger
-from lumibot.entities import Asset
 
 from .base import BaseStrategy
 

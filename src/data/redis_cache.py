@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from collections.abc import Awaitable
+from typing import Any, cast
 
 import redis.asyncio as aioredis
 from loguru import logger
@@ -40,7 +41,7 @@ class RedisCache:
                 decode_responses=True,
                 encoding="utf-8",
             )
-            await self._client.ping()
+            await cast(Awaitable[Any], self._client.ping())
             logger.info(f"Redis connected to {self._url}")
         except Exception:
             logger.exception("Failed to connect to Redis")
@@ -96,7 +97,7 @@ class RedisCache:
         client = self._require_client()
         key = f"price:latest:{symbol}"
         try:
-            await client.hset(
+            await cast(Awaitable[Any], client.hset(
                 key,
                 mapping={
                     "price": str(price),
@@ -105,7 +106,7 @@ class RedisCache:
                     "exchange": exchange,
                     "ts": str(ts),
                 },
-            )
+            ))
         except Exception:
             logger.exception(f"Failed to set latest price for {symbol}")
 
@@ -125,7 +126,7 @@ class RedisCache:
         client = self._require_client()
         key = f"price:latest:{symbol}"
         try:
-            data = await client.hgetall(key)
+            data = await cast(Awaitable[dict[str, str]], client.hgetall(key))
             return data if data else None
         except Exception:
             logger.exception(f"Failed to get latest price for {symbol}")
@@ -161,7 +162,7 @@ class RedisCache:
         client = self._require_client()
         key = f"ticker:{symbol}"
         try:
-            await client.hset(
+            await cast(Awaitable[Any], client.hset(
                 key,
                 mapping={
                     "bid": str(bid),
@@ -169,7 +170,7 @@ class RedisCache:
                     "exchange": exchange,
                     "ts": str(ts),
                 },
-            )
+            ))
         except Exception:
             logger.exception(f"Failed to set ticker for {symbol}")
 
@@ -189,7 +190,7 @@ class RedisCache:
         client = self._require_client()
         key = f"ticker:{symbol}"
         try:
-            data = await client.hgetall(key)
+            data = await cast(Awaitable[dict[str, str]], client.hgetall(key))
             return data if data else None
         except Exception:
             logger.exception(f"Failed to get ticker for {symbol}")
@@ -218,9 +219,9 @@ class RedisCache:
         channel = f"price:{symbol}"
         try:
             payload = json.dumps(data)
-            num_subscribers = await client.publish(channel, payload)
+            num_subscribers = await cast(Awaitable[int], client.publish(channel, payload))
             logger.trace(f"Published to {channel}: {num_subscribers} subscribers")
-            return num_subscribers
+            return int(num_subscribers)
         except Exception:
             logger.exception(f"Failed to publish price for {symbol}")
             return 0
@@ -229,7 +230,7 @@ class RedisCache:
     # Context manager support
     # ------------------------------------------------------------------
 
-    async def __aenter__(self) -> "RedisCache":
+    async def __aenter__(self) -> RedisCache:
         await self.connect()
         return self
 

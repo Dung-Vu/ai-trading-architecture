@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import time
-from typing import Any
+from typing import Any, cast
 
 from loguru import logger
 
@@ -68,7 +68,6 @@ class LLMClient:
 
         # Set API keys from env if provided
         for provider, key in self._api_keys.items():
-            env_key = f"{provider.upper()}_API_KEY"
             litellm.api_key = key  # Default key
             logger.debug(f"Set API key for provider: {provider}")
 
@@ -147,7 +146,7 @@ class LLMClient:
                         f"attempt={attempt + 1}"
                     )
 
-                    return content
+                    return str(content)
 
                 except Exception as exc:
                     last_error = exc
@@ -197,7 +196,7 @@ class LLMClient:
             cleaned = cleaned.rstrip().removesuffix("```").strip()
 
         try:
-            return json.loads(cleaned)
+            return cast(dict[str, Any], json.loads(cleaned))
         except json.JSONDecodeError as exc:
             logger.error(f"Failed to parse LLM response as JSON: {cleaned[:500]}")
             raise LLMClientError(f"JSON parse error: {exc}") from exc

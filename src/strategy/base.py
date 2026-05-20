@@ -1,11 +1,10 @@
 """Base strategy class for crypto trading."""
 
 from abc import abstractmethod
-from typing import Optional
 
 import pandas as pd
 from loguru import logger
-from lumibot.entities import Asset, Order
+from lumibot.entities import Asset
 from lumibot.strategies import Strategy
 
 
@@ -104,7 +103,7 @@ class BaseStrategy(Strategy):
         self.vars.max_drawdown = self.parameters.get("max_drawdown", 0.15)
 
         # Trading state
-        self.vars.entry_price: Optional[float] = None
+        self.vars.entry_price = None
         self.vars.trade_count = 0
         self.vars.peak_value = self.parameters["initial_capital"]
 
@@ -273,10 +272,11 @@ class BaseStrategy(Strategy):
         if current_value > self.vars.peak_value:
             self.vars.peak_value = current_value
 
-        if self.vars.peak_value > 0:
-            drawdown = (self.vars.peak_value - current_value) / self.vars.peak_value
-        else:
-            drawdown = 0.0
+        drawdown = (
+            (self.vars.peak_value - current_value) / self.vars.peak_value
+            if self.vars.peak_value > 0
+            else 0.0
+        )
 
         if drawdown >= self.vars.max_drawdown:
             logger.warning(

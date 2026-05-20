@@ -49,4 +49,4 @@ EXPOSE 8501 9000
 
 # Use tini as entrypoint for proper signal handling
 ENTRYPOINT ["tini", "--"]
-CMD ["python", "-m", "src.main"]
+CMD ["python", "-m", "src.main_full", "--mode", "dryrun"]

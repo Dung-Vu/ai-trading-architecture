@@ -6,7 +6,7 @@ Loads settings from .env, settings.yaml, and command-line args.
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from urllib.parse import quote_plus
 
 import yaml
 from dotenv import load_dotenv
@@ -78,7 +78,7 @@ class AppConfig:
     litellm_model: str = "anthropic/claude-sonnet-4"
 
 
-def load_config(config_path: Optional[str] = None, env_path: Optional[str] = None) -> AppConfig:
+def load_config(config_path: str | None = None, env_path: str | None = None) -> AppConfig:
     """Load configuration from settings.yaml and .env files."""
     base_dir = Path(__file__).parent.parent
     config = AppConfig()
@@ -118,20 +118,39 @@ def load_config(config_path: Optional[str] = None, env_path: Optional[str] = Non
     config.binance_testnet_api_key = os.getenv("BINANCE_TESTNET_API_KEY", "")
     config.binance_testnet_api_secret = os.getenv("BINANCE_TESTNET_API_SECRET", "")
     config.redis_url = os.getenv("REDIS_URL", config.redis_url)
-    config.questdb_addr = os.getenv("QUESTDB_HTTP_ADDR", config.questdb_addr)
-    config.database_url = os.getenv("DATABASE_URL", config.database_url)
+
+    questdb_host = os.getenv("QUESTDB_HOST")
+    questdb_port = os.getenv("QUESTDB_PORT")
+    config.questdb_addr = os.getenv(
+        "QUESTDB_HTTP_ADDR",
+        os.getenv(
+            "DATA_QUESTDB_ADDR",
+            f"{questdb_host}:{questdb_port or '9000'}" if questdb_host else config.questdb_addr,
+        ),
+    )
+
+    if os.getenv("DATABASE_URL"):
+        config.database_url = os.environ["DATABASE_URL"]
+    elif os.getenv("POSTGRES_HOST"):
+        pg_user = os.getenv("POSTGRES_USER", "trading_user")
+        pg_password = quote_plus(os.getenv("POSTGRES_PASSWORD", "trading_pass"))
+        pg_host = os.getenv("POSTGRES_HOST", "localhost")
+        pg_port = os.getenv("POSTGRES_PORT", "5432")
+        pg_db = os.getenv("POSTGRES_DB", "trading_db")
+        config.database_url = f"postgresql://{pg_user}:{pg_password}@{pg_host}:{pg_port}/{pg_db}"
+
     config.qdrant_url = os.getenv("QDRANT_URL", config.qdrant_url)
 
-    if os.getenv("TRADING_MODE"):
-        config.trading.mode = os.getenv("TRADING_MODE")
-    if os.getenv("TELEGRAM_BOT_TOKEN"):
-        config.monitoring.telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    if trading_mode := os.getenv("TRADING_MODE"):
+        config.trading.mode = trading_mode
+    if telegram_token := os.getenv("TELEGRAM_BOT_TOKEN"):
+        config.monitoring.telegram_bot_token = telegram_token
         config.monitoring.telegram_enabled = True
-    if os.getenv("TELEGRAM_CHAT_ID"):
-        config.monitoring.telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    if os.getenv("LITELLM_MODEL"):
-        config.litellm_model = os.getenv("LITELLM_MODEL")
-    if os.getenv("INITIAL_CAPITAL"):
-        config.trading.initial_capital = float(os.getenv("INITIAL_CAPITAL"))
+    if telegram_chat_id := os.getenv("TELEGRAM_CHAT_ID"):
+        config.monitoring.telegram_chat_id = telegram_chat_id
+    if litellm_model := os.getenv("LITELLM_MODEL"):
+        config.litellm_model = litellm_model
+    if initial_capital := os.getenv("INITIAL_CAPITAL"):
+        config.trading.initial_capital = float(initial_capital)
 
     return config

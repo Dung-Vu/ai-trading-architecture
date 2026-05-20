@@ -12,15 +12,15 @@ Usage:
     >>> from src.memory import TradeMemory, WeeklyReviewer
     >>> async with TradeMemory() as memory:
     ...     reviewer = WeeklyReviewer(memory)
-    ...     report = reviewer.generate_report()
+    ...     report = await reviewer.generate_report()
     ...     reviewer.save_report(report)
-    ...     insights = reviewer.extract_insights()
+    ...     insights = await reviewer.extract_insights()
 """
 
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -53,7 +53,7 @@ class WeeklyReviewer:
 
     # ─── Report Generation ─────────────────────────────────────────────
 
-    def generate_report(
+    async def generate_report(
         self,
         end_date: datetime | None = None,
         lookback_days: int = 7,
@@ -76,7 +76,7 @@ class WeeklyReviewer:
             Formatted report string.
         """
         if end_date is None:
-            end_date = datetime.now(timezone.utc)
+            end_date = datetime.now(UTC)
         start_date = end_date - timedelta(days=lookback_days)
 
         logger.info(
@@ -90,33 +90,33 @@ class WeeklyReviewer:
         lines.append("# 📊 Weekly Trading Review")
         lines.append("")
         lines.append(f"**Period:** {start_date.strftime('%Y-%m-%d')} → {end_date.strftime('%Y-%m-%d')}")
-        lines.append(f"**Generated:** {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+        lines.append(f"**Generated:** {datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}")
         lines.append("")
         lines.append("---")
         lines.append("")
 
         # Section 1: Performance Summary
-        lines.extend(self._section_performance_summary(start_date, end_date))
+        lines.extend(await self._section_performance_summary(start_date, end_date))
         lines.append("")
 
         # Section 2: Best & Worst Trades
-        lines.extend(self._section_best_worst_trades(start_date, end_date))
+        lines.extend(await self._section_best_worst_trades(start_date, end_date))
         lines.append("")
 
         # Section 3: Strategy Comparison
-        lines.extend(self._section_strategy_comparison(start_date, end_date))
+        lines.extend(await self._section_strategy_comparison(start_date, end_date))
         lines.append("")
 
         # Section 4: Pattern Analysis
-        lines.extend(self._section_pattern_analysis())
+        lines.extend(await self._section_pattern_analysis())
         lines.append("")
 
         # Section 5: Reflection
-        lines.extend(self._section_reflection(start_date, end_date))
+        lines.extend(await self._section_reflection(start_date, end_date))
         lines.append("")
 
         # Section 6: Action Items
-        lines.extend(self._section_action_items(start_date, end_date))
+        lines.extend(await self._section_action_items(start_date, end_date))
         lines.append("")
         lines.append("---")
         lines.append("")
@@ -145,8 +145,8 @@ class WeeklyReviewer:
         lines = [
             "## 📈 Performance Summary",
             "",
-            f"| Metric | Value |",
-            f"|--------|-------|",
+            "| Metric | Value |",
+            "|--------|-------|",
             f"| {emoji} **Total P&L** | ${summary.total_pnl:+,.2f} |",
             f"| 📊 **Win Rate** | {summary.win_rate:.1f}% ({summary.winning_trades}W / {summary.losing_trades}L) |",
             f"| 📈 **Sharpe Ratio** | {summary.sharpe_ratio:.3f} |",
@@ -574,7 +574,7 @@ class WeeklyReviewer:
             Path to the saved file.
         """
         if path is None:
-            date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            date_str = datetime.now(UTC).strftime("%Y-%m-%d")
             filename = f"weekly_review_{date_str}.md"
             filepath = self._report_dir / filename
         else:
@@ -606,7 +606,7 @@ class WeeklyReviewer:
             List of insight strings, each actionable for prompt tuning.
         """
         if end_date is None:
-            end_date = datetime.now(timezone.utc)
+            end_date = datetime.now(UTC)
         if start_date is None:
             start_date = end_date - timedelta(days=30)
 

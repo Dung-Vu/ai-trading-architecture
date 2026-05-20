@@ -4,10 +4,21 @@ from __future__ import annotations
 
 from loguru import logger
 
-from cryptofeed import FeedHandler
-from cryptofeed.callback import CandleCallback, TickerCallback, TradeCallback
-from cryptofeed.defines import CANDLES, L2_BOOK, TICKER, TRADES
-from cryptofeed.exchanges import Binance
+try:
+    from cryptofeed import FeedHandler
+    from cryptofeed.callback import CandleCallback, TickerCallback, TradeCallback
+    from cryptofeed.defines import CANDLES, L2_BOOK, TICKER, TRADES
+    from cryptofeed.exchanges import Binance
+except ImportError:
+    FeedHandler = None
+    Binance = None
+    CandleCallback = None
+    TickerCallback = None
+    TradeCallback = None
+    CANDLES = "candles"
+    L2_BOOK = "l2_book"
+    TICKER = "ticker"
+    TRADES = "trades"
 
 from .config import DataConfig
 from .quality_gates import QualityGates
@@ -73,16 +84,17 @@ class BinanceConnector:
         FeedHandler
             Configured FeedHandler instance (not yet started).
         """
+        if FeedHandler is None or Binance is None:
+            raise RuntimeError(
+                "cryptofeed is required for BinanceConnector. On Windows, install "
+                "Microsoft C++ Build Tools first, then install cryptofeed."
+            )
+
         fh = FeedHandler()
-        feed = Binance(
-            config={
-                # Map Cryptofeed symbol format if needed
-            }
-        )
 
         # Subscribe to requested channels
         if TRADES in self._resolved_channels():
-            feed.add_feed(
+            fh.add_feed(
                 Binance(
                     channels={TRADES: self.config.symbols},
                     callbacks={TRADES: TradeCallback(self._trade_callback)},
@@ -91,7 +103,7 @@ class BinanceConnector:
             logger.info(f"Subscribed to TRADES: {self.config.symbols}")
 
         if CANDLES in self._resolved_channels():
-            feed.add_feed(
+            fh.add_feed(
                 Binance(
                     channels={CANDLES: self.config.symbols},
                     callbacks={
@@ -108,7 +120,7 @@ class BinanceConnector:
             )
 
         if TICKER in self._resolved_channels():
-            feed.add_feed(
+            fh.add_feed(
                 Binance(
                     channels={TICKER: self.config.symbols},
                     callbacks={TICKER: TickerCallback(self._ticker_callback)},
@@ -151,9 +163,6 @@ class BinanceConnector:
             trade_id = str(data.get("id", ""))
             exchange = "Binance"
 
-            # Update recent prices for spike detection
-            self._update_recent_price(symbol, price)
-
             # Quality gate validation
             passed, reason = self.quality_gates.validate_trade(
                 trade_data={
@@ -173,6 +182,8 @@ class BinanceConnector:
                     f"Trade rejected by quality gate: {symbol} — {reason}"
                 )
                 return
+
+            self._update_recent_price(symbol, price)
 
             # Write to QuestDB
             if self.questdb_writer is not None:
@@ -286,6 +297,16 @@ class BinanceConnector:
             bid = data.get("bid", 0.0)
             ask = data.get("ask", 0.0)
             exchange = "Binance"
+
+            if self.questdb_writer is not None:
+                ts_ns = int(receipt_ts * 1_000_000_000)
+                self.questdb_writer.write_ticker(
+                    symbol=symbol,
+                    bid=bid,
+                    ask=ask,
+                    exchange=exchange,
+                    ts_ns=ts_ns,
+                )
 
             # Cache in Redis
             if self.redis_cache is not None:

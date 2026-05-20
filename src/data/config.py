@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from typing import Any
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
@@ -118,7 +119,7 @@ class DataConfig(BaseSettings):
         return v
 
     @classmethod
-    def load_from_env(cls) -> "DataConfig":
+    def load_from_env(cls) -> DataConfig:
         """Load configuration from environment variables.
 
         Environment variables (all optional, defaults used when not set):
@@ -136,7 +137,7 @@ class DataConfig(BaseSettings):
         DataConfig
             Validated configuration instance.
         """
-        env_map: dict[str, str] = {}
+        env_map: dict[str, Any] = {}
 
         if syms := os.getenv("DATA_SYMBOLS"):
             env_map["symbols"] = [s.strip() for s in syms.split(",") if s.strip()]
@@ -146,8 +147,14 @@ class DataConfig(BaseSettings):
             env_map["candle_interval"] = os.environ["DATA_CANDLE_INTERVAL"]
         if os.getenv("DATA_REDIS_URL"):
             env_map["redis_url"] = os.environ["DATA_REDIS_URL"]
+        elif os.getenv("REDIS_URL"):
+            env_map["redis_url"] = os.environ["REDIS_URL"]
         if os.getenv("DATA_QUESTDB_ADDR"):
             env_map["questdb_addr"] = os.environ["DATA_QUESTDB_ADDR"]
+        elif os.getenv("QUESTDB_HTTP_ADDR"):
+            env_map["questdb_addr"] = os.environ["QUESTDB_HTTP_ADDR"]
+        elif os.getenv("QUESTDB_HOST"):
+            env_map["questdb_addr"] = f"{os.environ['QUESTDB_HOST']}:{os.getenv('QUESTDB_PORT', '9000')}"
         if os.getenv("DATA_MAX_LATENCY_MS"):
             env_map["max_latency_ms"] = int(os.environ["DATA_MAX_LATENCY_MS"])
         if os.getenv("DATA_Z_SCORE_THRESHOLD"):

@@ -23,13 +23,11 @@ from __future__ import annotations
 
 import json
 import math
-import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from loguru import logger
-
 
 # ─── AutoTuner ─────────────────────────────────────────────────────────
 
@@ -105,7 +103,7 @@ class AutoTuner:
         """
         logger.info("🔧 Starting weekly optimization cycle...")
         report: dict[str, Any] = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "strategy": self.strategy_name,
             "steps_completed": [],
         }
@@ -199,7 +197,7 @@ class AutoTuner:
         if len(older_trades) < 10:
             # Not enough historical data for comparison
             recent_metrics = self._calculate_metrics(recent_20)
-            return recent_metrics["sharpe_ratio"] < self.SHARPE_DECAY_THRESHOLD
+            return float(recent_metrics["sharpe_ratio"]) < self.SHARPE_DECAY_THRESHOLD
 
         recent_metrics = self._calculate_metrics(recent_20)
         historical_metrics = self._calculate_metrics(older_trades)
@@ -256,7 +254,6 @@ class AutoTuner:
 
         # Analyze by pattern
         losing_trades = [t for t in trades if t.get("pnl", 0) < 0]
-        winning_trades = [t for t in trades if t.get("pnl", 0) > 0]
 
         # 1. SMA timing analysis
         late_entries = 0
@@ -287,9 +284,8 @@ class AutoTuner:
         for trade in trades:
             indicators = trade.get("indicators", {})
             rsi = indicators.get("rsi", 0)
-            if rsi and trade.get("pnl", 0) < 0:
-                if rsi > 65:
-                    rsi_overbought_exits += 1
+            if rsi and trade.get("pnl", 0) < 0 and rsi > 65:
+                rsi_overbought_exits += 1
 
         if rsi_overbought_exits > 3:
             recommendations.append(
@@ -357,7 +353,7 @@ class AutoTuner:
         try:
             # Try async method first (TradeMemory)
             if hasattr(self.trade_memory, "get_trade_history"):
-                end_date = datetime.now(timezone.utc)
+                end_date = datetime.now(UTC)
                 start_date = end_date - timedelta(days=days)
 
                 # Check if async
@@ -370,7 +366,7 @@ class AutoTuner:
                     trades = self.trade_memory.get_trade_history(
                         limit=500, start_date=start_date, end_date=end_date
                     )
-                return trades
+                return list(trades)
         except Exception as exc:
             logger.warning(f"Failed to fetch trades from memory: {exc}")
 
@@ -383,10 +379,10 @@ class AutoTuner:
         random.seed(42)
 
         trades = []
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         num_trades = min(days * 3, 30)  # ~3 trades per day
 
-        for i in range(num_trades):
+        for _ in range(num_trades):
             pnl = random.gauss(50, 150)  # Mean $50, std $150
             ts = now - timedelta(hours=random.randint(0, days * 24))
 
@@ -465,7 +461,7 @@ class AutoTuner:
         return {
             "total_trades": len(trades),
             "winning_trades": len(wins),
-            "losing_trads": len(losses),
+            "losing_trades": len(losses),
             "win_rate": win_rate,
             "total_pnl": round(total_pnl, 2),
             "avg_pnl": round(avg_pnl, 2),
@@ -490,8 +486,8 @@ class AutoTuner:
         Returns:
             Optimization result with new recommended parameters.
         """
-        best_params = dict(self.PARAM_RANGES)
-        best_score = current_metrics.get("sharpe_ratio", 0)
+        best_params: dict[str, Any] = dict(self.PARAM_RANGES)
+        best_score = float(current_metrics.get("sharpe_ratio", 0))
 
         # Define parameter combinations to test
         param_combos = [
@@ -508,10 +504,7 @@ class AutoTuner:
         if trades:
             symbols = [t.get("symbol", "BTC/USDT") for t in trades]
             most_common = max(set(symbols), key=symbols.count)
-            if "/" in most_common:
-                symbol = most_common.split("/")[0]
-            else:
-                symbol = most_common
+            symbol = most_common.split("/")[0] if "/" in most_common else most_common
 
         # Check if strategy class is available
         strategy_class = getattr(self, "strategy_class", None)
@@ -535,7 +528,7 @@ class AutoTuner:
             try:
                 from src.strategy.backtest import BacktestRunner
                 # We will backtest over the last 90 days for better statistics
-                end_date = datetime.now(timezone.utc)
+                end_date = datetime.now(UTC)
                 start_date = end_date - timedelta(days=90)
 
                 logger.info(f"📊 Attempting real Lumibot backtest optimization for {symbol} (90-day window)...")
@@ -606,9 +599,7 @@ class AutoTuner:
 
             # Simple filter: would this trade have been taken?
             side = trade.get("side", "BUY")
-            if side == "BUY" and rsi <= rsi_oversold:
-                filtered_pnls.append(trade.get("pnl", 0))
-            elif side == "SELL" and rsi >= rsi_overbought:
+            if side == "BUY" and rsi <= rsi_oversold or side == "SELL" and rsi >= rsi_overbought:
                 filtered_pnls.append(trade.get("pnl", 0))
             elif side == "BUY" and rsi > rsi_oversold:
                 # Would have missed this trade
@@ -635,7 +626,7 @@ class AutoTuner:
         """
         new_params = optimization.get("new_params", {})
         insights = {
-            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "generated_at": datetime.now(UTC).isoformat(),
             "strategy": self.strategy_name,
             "key_insights": [],
             "parameter_changes": new_params,
@@ -665,7 +656,7 @@ class AutoTuner:
         """Save optimized configuration to file."""
         config = {
             "version": 1,
-            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "generated_at": datetime.now(UTC).isoformat(),
             "strategy": self.strategy_name,
             "parameters": optimization.get("new_params", {}),
             "performance": metrics,
@@ -673,7 +664,7 @@ class AutoTuner:
             "improvement": optimization.get("improvement", 0),
         }
 
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
         filename = f"{self.strategy_name}_optimized_{timestamp}.json"
         config_path = self.config_dir / filename
 

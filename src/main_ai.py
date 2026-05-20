@@ -25,9 +25,11 @@ import asyncio
 import signal
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from contextlib import suppress
+from datetime import UTC, datetime, timedelta
+from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from loguru import logger
 
@@ -227,6 +229,7 @@ class AITradingBot:
         self._redis_cache: Any = None
         self._dspy_optimizer: Any = None
         self._weekly_reviewer: Any = None
+        self._public_client: Any = None
 
         # State
         self._running = False
@@ -273,6 +276,7 @@ class AITradingBot:
             self._trade_memory = None
 
         # 2. Risk Engine
+        from src.execution.position_sizer import PositionSizer
         from src.risk.risk_engine import RiskEngine
 
         self._risk_engine = RiskEngine(
@@ -281,7 +285,14 @@ class AITradingBot:
             max_position_pct=self.config.risk.max_position_pct / 100,
             max_leverage=self.config.risk.max_leverage,
         )
-        logger.info("✅ RiskEngine initialized")
+        self._risk_engine.update_peak_equity(self.config.trading.initial_capital)
+
+        self._position_sizer = PositionSizer(
+            max_position_pct=self.config.risk.max_position_pct / 100,
+            max_leverage=self.config.risk.max_leverage,
+            daily_loss_limit_pct=self.config.risk.max_daily_loss_pct / 100,
+        )
+        logger.info("✅ RiskEngine and PositionSizer initialized")
 
         # 3. Dry-run executor or OrderManager (for trading)
         from src.execution.order_manager import OrderManager
@@ -297,7 +308,9 @@ class AITradingBot:
             from src.execution.exchange_client import ExchangeClient
             api_key = self.config.binance_testnet_api_key if self.mode == "testnet" else self.config.binance_api_key
             api_secret = self.config.binance_testnet_api_secret if self.mode == "testnet" else self.config.binance_api_secret
-            
+            if not api_key or not api_secret:
+                raise ValueError(f"Missing Binance API credentials for {self.mode} mode")
+
             exchange_client = ExchangeClient(
                 api_key=api_key,
                 api_secret=api_secret,
@@ -307,6 +320,9 @@ class AITradingBot:
                 exchange_client.connect()
             except Exception as e:
                 logger.error(f"Failed to connect exchange client for {self.mode}: {e}")
+                raise RuntimeError(
+                    f"Exchange connection failed for {self.mode}"
+                ) from e
             self._order_manager = OrderManager(exchange_client, dry_run=False)
             logger.info(f"✅ {self.mode} OrderManager initialized")
 
@@ -382,17 +398,13 @@ class AITradingBot:
 
         # Save trade state
         if self._trade_memory:
-            try:
+            with suppress(Exception):
                 await self._trade_memory.close()
-            except Exception:
-                pass
 
         # Close Redis
         if self._redis_cache:
-            try:
+            with suppress(Exception):
                 await self._redis_cache.close()
-            except Exception:
-                pass
 
         logger.info("👋 AI Trading Bot shut down complete")
 
@@ -430,7 +442,7 @@ class AITradingBot:
                     )
                     # Event was set — we're shutting down
                     break
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     pass  # Normal timeout, continue loop
 
         except asyncio.CancelledError:
@@ -455,8 +467,33 @@ class AITradingBot:
         # Step 1: Get latest price from Redis cache
         current_price = await self._get_latest_price(symbol)
         if current_price is None:
-            logger.debug(f"No cached price for {symbol}, skipping")
+            if self.mode == "dryrun":
+                base_prices = {
+                    "BTC/USDT": 67500.0,
+                    "ETH/USDT": 3450.0,
+                    "SOL/USDT": 145.0,
+                }
+                current_price = base_prices.get(symbol, 100.0)
+                import random
+                current_price = round(current_price * (1 + random.uniform(-0.01, 0.01)), 2)
+            else:
+                try:
+                    loop = asyncio.get_running_loop()
+                    ticker = await loop.run_in_executor(
+                        None, lambda: self._order_manager._client.fetch_ticker(symbol)
+                    )
+                    current_price = float(ticker.get("last", 0.0))
+                except Exception as exc:
+                    logger.error(f"Failed to fetch fallback ticker for {symbol}: {exc}")
+
+        if current_price is None or current_price <= 0:
+            logger.error(f"Failed to get price for {symbol}, skipping")
             return
+
+        # Update peak equity in risk engine
+        if self._risk_engine:
+            portfolio = await self._get_portfolio_state()
+            self._risk_engine.update_peak_equity(portfolio["total_value"])
 
         # Step 2: Get market data for indicators
         market_data = await self._build_market_data(symbol, current_price)
@@ -492,9 +529,7 @@ class AITradingBot:
                         stop_price = order["stop_price"]
                         direction = order.get("direction", "")
                         triggered_price = False
-                        if direction == "below" and current_price <= stop_price:
-                            triggered_price = True
-                        elif direction == "above" and current_price >= stop_price:
+                        if direction == "below" and current_price <= stop_price or direction == "above" and current_price >= stop_price:
                             triggered_price = True
 
                         if triggered_price:
@@ -506,22 +541,24 @@ class AITradingBot:
                             try:
                                 side_to_execute = trg_order["side"]
                                 amount_to_execute = trg_order["quantity"]
+                                order_symbol = symbol
                                 portfolio = await self._get_portfolio_state()
-                                
+
                                 logger.info(f"🚨 Sending real market {side_to_execute.upper()} SL/TP close order to exchange for {symbol}...")
-                                loop = asyncio.get_event_loop()
+                                loop = asyncio.get_running_loop()
                                 order = await loop.run_in_executor(
                                     None,
-                                    lambda: self._order_manager.create_market_order(
-                                        symbol=symbol,
+                                    partial(
+                                        self._order_manager.create_market_order,
+                                        symbol=order_symbol,
                                         side=side_to_execute,
-                                        amount=amount_to_execute
-                                    )
+                                        amount=amount_to_execute,
+                                    ),
                                 )
-                                
+
                                 avg_fill_price = float(order.get("average", current_price) or current_price)
                                 filled_qty = float(order.get("filled", amount_to_execute))
-                                
+
                                 pnl = 0.0
                                 pnl_pct = 0.0
                                 if symbol in self._positions:
@@ -532,7 +569,7 @@ class AITradingBot:
                                     else:
                                         pnl = (entry_price - avg_fill_price) * filled_qty
                                         pnl_pct = ((entry_price - avg_fill_price) / entry_price * 100) if entry_price > 0 else 0.0
-                                
+
                                 trg_result = {
                                     "trade_id": order.get("id"),
                                     "symbol": symbol,
@@ -543,25 +580,28 @@ class AITradingBot:
                                     "pnl": pnl,
                                     "pnl_pct": pnl_pct,
                                     "cash_total": portfolio["cash"] + (filled_qty * avg_fill_price if side_to_execute == "sell" else -filled_qty * avg_fill_price),
-                                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                                    "timestamp": datetime.now(UTC).isoformat(),
                                     "triggered_by": trg_order.get("type"),
                                     "order_info": order,
                                 }
-                                
+
                                 if symbol in self._positions:
                                     del self._positions[symbol]
-                                    
+
                                 self._pending_sl_tp = [
                                     o for o in self._pending_sl_tp if o["symbol"] != symbol
                                 ]
-                                
+
                                 await self._send_trade_alert(symbol, trg_result, {"action": side_to_execute.upper(), "confidence": 100, "rounds": 0})
                                 break
                             except Exception as exc:
                                 logger.error(f"Failed to execute real SL/TP close order on exchange: {exc}")
 
         # Step 3: Run strategy
-        signal_action = await self._run_strategy(symbol, market_data)
+        if self.strategy == "ai_debate":
+            signal_action = "BUY"
+        else:
+            signal_action = await self._run_strategy(symbol, market_data)
 
         if signal_action == "HOLD":
             logger.debug(f"[{symbol}] Strategy says HOLD")
@@ -574,11 +614,13 @@ class AITradingBot:
             return
 
         # Step 5: Risk Manager pre-trade check
-        approved, reason = self._run_risk_check(
+        approved, reason = await self._run_risk_check(
             symbol,
             debate_result.get("action", "HOLD"),
             current_price,
+            stop_loss=debate_result.get("stop_loss", 0.0)
         )
+        await self._log_debate_decision(symbol, debate_result)
 
         if not approved:
             logger.info(f"[{symbol}] Trade rejected by Risk Engine: {reason}")
@@ -596,7 +638,7 @@ class AITradingBot:
             return
 
         # Step 7: Log trade + debate to memory
-        await self._log_trade_and_debate(symbol, trade_result, debate_result)
+        await self._log_trade(symbol, trade_result, debate_result)
 
         # Step 8: Send Telegram alert
         await self._send_trade_alert(symbol, trade_result, debate_result)
@@ -618,34 +660,84 @@ class AITradingBot:
 
         return None
 
+    async def _fetch_real_indicators(self, symbol: str) -> dict[str, Any]:
+        """Fetch historical candles from Binance and compute technical indicators."""
+        try:
+            import ccxt
+            import pandas as pd
+            import ta
+
+            if not hasattr(self, "_public_client") or self._public_client is None:
+                self._public_client = ccxt.binance({"enableRateLimit": True})
+
+            # Fetch last 100 candles (1m timeframe)
+            loop = asyncio.get_running_loop()
+            ohlcv = await loop.run_in_executor(
+                None,
+                partial(self._public_client.fetch_ohlcv, symbol, timeframe="1m", limit=100),
+            )
+
+            df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+
+            # Compute indicators
+            rsi_series = ta.momentum.RSIIndicator(df["close"], window=14).rsi()
+            sma_fast_series = ta.trend.SMAIndicator(df["close"], window=20).sma_indicator()
+            sma_slow_series = ta.trend.SMAIndicator(df["close"], window=50).sma_indicator()
+
+            macd_obj = ta.trend.MACD(df["close"], window_slow=26, window_fast=12)
+            macd_series = macd_obj.macd()
+
+            bb = ta.volatility.BollingerBands(df["close"], window=20, window_dev=2.0)
+            bb_upper_series = bb.bollinger_hband()
+            bb_lower_series = bb.bollinger_lband()
+
+            volume_sma = ta.trend.SMAIndicator(df["volume"], window=20).sma_indicator()
+
+            latest_price = float(df["close"].iloc[-1])
+            latest_volume = float(df["volume"].iloc[-1])
+            avg_volume = float(volume_sma.iloc[-1]) if not pd.isna(volume_sma.iloc[-1]) else latest_volume
+
+            return {
+                "price": latest_price,
+                "rsi": float(rsi_series.iloc[-1]) if not pd.isna(rsi_series.iloc[-1]) else 50.0,
+                "sma_fast": float(sma_fast_series.iloc[-1]) if not pd.isna(sma_fast_series.iloc[-1]) else latest_price,
+                "sma_slow": float(sma_slow_series.iloc[-1]) if not pd.isna(sma_slow_series.iloc[-1]) else latest_price,
+                "macd": float(macd_series.iloc[-1]) if not pd.isna(macd_series.iloc[-1]) else 0.0,
+                "bb_upper": float(bb_upper_series.iloc[-1]) if not pd.isna(bb_upper_series.iloc[-1]) else latest_price * 1.02,
+                "bb_lower": float(bb_lower_series.iloc[-1]) if not pd.isna(bb_lower_series.iloc[-1]) else latest_price * 0.98,
+                "volume": latest_volume,
+                "volume_high": latest_volume > avg_volume * 1.5,
+            }
+        except Exception as exc:
+            logger.warning(f"Failed to fetch/compute real indicators for {symbol}: {exc}")
+            import random
+            price = getattr(self, "_last_prices", {}).get(symbol, 67000.0)
+            return {
+                "price": price,
+                "rsi": round(random.uniform(35, 65), 1),
+                "sma_fast": price,
+                "sma_slow": price,
+                "macd": 0.0,
+                "bb_upper": price * 1.02,
+                "bb_lower": price * 0.98,
+                "volume": 1.0,
+                "volume_high": False,
+            }
+
     async def _build_market_data(
         self, symbol: str, current_price: float
     ) -> dict[str, Any]:
         """Build market data dict with technical indicators."""
-        # In production, this would query historical data from QuestDB
-        # and compute technical indicators
         market_data: dict[str, Any] = {
             "symbol": symbol,
             "price": current_price,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
         }
 
-        # Try to compute indicators from historical data
-        try:
-            import pandas as pd
-            import ta
-
-            # Placeholder: in production, fetch from QuestDB
-            # For now, create minimal data
-            market_data["indicators"] = {
-                "rsi": 50.0,  # Neutral
-                "macd": 0.0,
-                "bb_upper": current_price * 1.02,
-                "bb_lower": current_price * 0.98,
-                "volume": 0.0,
-            }
-        except ImportError:
-            market_data["indicators"] = {}
+        real_ind = await self._fetch_real_indicators(symbol)
+        if "price" in real_ind and real_ind["price"] > 0:
+            market_data["price"] = real_ind["price"]
+        market_data["indicators"] = real_ind
 
         return market_data
 
@@ -703,16 +795,20 @@ class AITradingBot:
             return None
 
         try:
-            result = self._debate_engine.run_debate(
-                market_data=market_data,
-                symbol=symbol,
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: self._debate_engine.run_debate(
+                    market_data=market_data,
+                    symbol=symbol,
+                ),
             )
 
             # Convert DebateResult to dict
             if hasattr(result, "model_dump"):
-                return result.model_dump()
+                return cast(dict[str, Any], result.model_dump())
             elif hasattr(result, "dict"):
-                return result.dict()
+                return cast(dict[str, Any], result.dict())
             else:
                 return {
                     "action": getattr(result, "action", "HOLD"),
@@ -734,7 +830,7 @@ class AITradingBot:
         """Get the current portfolio state (cash, positions, total equity)."""
         if self.mode == "dryrun":
             if self._dry_run_executor:
-                return self._dry_run_executor.get_portfolio()
+                return cast(dict[str, Any], self._dry_run_executor.get_portfolio())
             return {
                 "cash": self.config.trading.initial_capital,
                 "positions": {},
@@ -746,55 +842,57 @@ class AITradingBot:
 
         # For testnet or live modes, query Binance via CCXT
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             raw_balance = await loop.run_in_executor(
                 None, self._order_manager._client.fetch_balance
             )
-            
+
             quote_asset = "USDT"
             if self.symbols:
                 parts = self.symbols[0].split("/")
                 if len(parts) > 1:
                     quote_asset = parts[1]
-            
+
             cash = float(raw_balance.get(quote_asset, {}).get("free", 0.0))
-            
+
             positions_data = {}
             total_value = cash
-            
+
             for asset, bal in raw_balance.items():
                 if asset in ("free", "used", "total", "info", quote_asset):
                     continue
-                
+
                 total_qty = float(bal.get("total", 0.0))
                 if total_qty > 0.000001:
                     symbol = f"{asset}/{quote_asset}"
                     current_price = await self._get_latest_price(symbol)
                     if current_price is None:
                         try:
+                            ticker_symbol = symbol
                             ticker = await loop.run_in_executor(
-                                None, lambda: self._order_manager._client.fetch_ticker(symbol)
+                                None,
+                                partial(self._order_manager._client.fetch_ticker, ticker_symbol)
                             )
                             current_price = float(ticker.get("last", 0.0))
                         except Exception:
                             current_price = 0.0
-                    
+
                     market_value = total_qty * current_price
                     total_value += market_value
-                    
+
                     positions_data[symbol] = {
                         "quantity": total_qty,
                         "avg_price": current_price,
                         "cost_basis": market_value,
                         "market_value": market_value,
                         "unrealized_pnl": 0.0,
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "timestamp": datetime.now(UTC).isoformat(),
                     }
-                    
+
             initial_balance = getattr(self.config.trading, "initial_capital", 10000.0)
             total_pnl = total_value - initial_balance
             total_pnl_pct = (total_pnl / initial_balance * 100) if initial_balance > 0 else 0.0
-            
+
             return {
                 "cash": cash,
                 "positions": positions_data,
@@ -819,6 +917,7 @@ class AITradingBot:
         symbol: str,
         action: str,
         price: float,
+        stop_loss: float = 0.0,
     ) -> tuple[bool, str]:
         """
         Run risk manager pre-trade check.
@@ -826,16 +925,44 @@ class AITradingBot:
         Returns: (approved, reason)
         """
         if self._risk_engine is None:
-            return True, "Risk engine not available"
+            return False, "Risk engine not available"
 
         # Get current portfolio state
         portfolio = await self._get_portfolio_state()
         positions = portfolio.get("positions", {})
 
-        # Calculate a reasonable quantity based on 10% of portfolio cash
-        quantity_pct = 0.10
-        available = portfolio["cash"] * quantity_pct
-        quantity = available / price if price > 0 else 0
+        # Use PositionSizer to calculate quantity
+        sl_price = stop_loss
+        if not sl_price or sl_price <= 0:
+            sl_price = price * 0.98 if action == "BUY" else price * 1.02
+
+        # Get historical performance stats if available
+        win_rate = 0.5
+        if self._trade_memory:
+            try:
+                stats = await self._trade_memory.get_performance_summary()
+                if stats and stats.total_trades > 5:
+                    win_rate = stats.win_rate / 100
+            except Exception:
+                pass
+
+        if not hasattr(self, "_position_sizer") or self._position_sizer is None:
+            from src.execution.position_sizer import PositionSizer
+            self._position_sizer = PositionSizer(
+                max_position_pct=self.config.risk.max_position_pct / 100,
+                max_leverage=self.config.risk.max_leverage,
+                daily_loss_limit_pct=self.config.risk.max_daily_loss_pct / 100,
+            )
+
+        size_res = self._position_sizer.calc_position_size(
+            strategy=self.strategy,
+            symbol=symbol,
+            entry_price=price,
+            stop_loss_price=sl_price,
+            equity=portfolio["total_value"],
+            win_rate=win_rate,
+        )
+        quantity = size_res.size_base
 
         if quantity <= 0:
             return False, "Insufficient cash for minimum quantity"
@@ -865,22 +992,48 @@ class AITradingBot:
         Returns: Trade result dict or None if execution failed.
         """
         portfolio = await self._get_portfolio_state()
-        quantity_pct = 0.10
-        available = portfolio["cash"] * quantity_pct
-        quantity = available / price if price > 0 else 0
+        sl_price = debate_result.get("stop_loss", 0.0)
+        if not sl_price or sl_price <= 0:
+            sl_price = price * 0.98 if action == "BUY" else price * 1.02
 
-        if self.mode != "dryrun":
+        # Get historical performance stats if available
+        win_rate = 0.5
+        if self._trade_memory:
             try:
-                quantity = self._order_manager._precision_amount(symbol, quantity)
+                stats = await self._trade_memory.get_performance_summary()
+                if stats and stats.total_trades > 5:
+                    win_rate = stats.win_rate / 100
             except Exception:
                 pass
+
+        if not hasattr(self, "_position_sizer") or self._position_sizer is None:
+            from src.execution.position_sizer import PositionSizer
+            self._position_sizer = PositionSizer(
+                max_position_pct=self.config.risk.max_position_pct / 100,
+                max_leverage=self.config.risk.max_leverage,
+                daily_loss_limit_pct=self.config.risk.max_daily_loss_pct / 100,
+            )
+
+        size_res = self._position_sizer.calc_position_size(
+            strategy=self.strategy,
+            symbol=symbol,
+            entry_price=price,
+            stop_loss_price=sl_price,
+            equity=portfolio["total_value"],
+            win_rate=win_rate,
+        )
+        quantity = size_res.size_base
+
+        if self.mode != "dryrun":
+            with suppress(Exception):
+                quantity = self._order_manager._precision_amount(symbol, quantity)
 
         if quantity <= 0:
             logger.warning(f"[{symbol}] Insufficient funds for {action} (quantity={quantity:.6f})")
             return None
 
         try:
-            ts = datetime.now(timezone.utc).isoformat()
+            ts = datetime.now(UTC).isoformat()
 
             if self.mode == "dryrun":
                 if self._dry_run_executor is None:
@@ -898,7 +1051,7 @@ class AITradingBot:
                     result["ai_confidence"] = debate_result.get("confidence", 50)
                     result["stop_loss"] = debate_result.get("stop_loss")
                     result["take_profit"] = debate_result.get("take_profit")
-                    
+
                     self._positions[symbol] = {
                         "side": "LONG",
                         "quantity": quantity,
@@ -933,7 +1086,7 @@ class AITradingBot:
                         logger.info(f"Registered Take Profit at ${tp:.2f} for {symbol}")
 
                     self._trade_count += 1
-                    return result
+                    return cast(dict[str, Any], result)
 
                 elif action == "SELL":
                     # Close position if exists
@@ -949,58 +1102,23 @@ class AITradingBot:
                         # Clear pending SL/TP for this symbol since position is closed
                         self._pending_sl_tp = [o for o in self._pending_sl_tp if o["symbol"] != symbol]
                     else:
-                        # Short sell simulation
-                        result = self._dry_run_executor.simulate_sell(
-                            symbol=symbol,
-                            quantity=quantity,
-                            price=price,
-                            timestamp=ts,
+                        logger.warning(
+                            f"[{symbol}] SELL ignored: no dry-run long position to close"
                         )
-                        self._positions[symbol] = {
-                            "side": "SHORT",
-                            "quantity": quantity,
-                            "entry_price": price,
-                            "entry_time": ts,
-                        }
-                        
-                        # Register SL/TP for short (inverse directions)
-                        sl = debate_result.get("stop_loss", 0)
-                        tp = debate_result.get("take_profit", 0)
-                        if sl and sl > 0:
-                            self._pending_sl_tp.append({
-                                "id": f"sl_{symbol.replace('/', '_')}_{int(time.time())}",
-                                "symbol": symbol,
-                                "side": "buy",
-                                "type": "stop_loss",
-                                "stop_price": float(sl),
-                                "quantity": quantity,
-                                "direction": "above",
-                            })
-                            logger.info(f"Registered Stop Loss at ${sl:.2f} for short {symbol}")
-                        if tp and tp > 0:
-                            self._pending_sl_tp.append({
-                                "id": f"tp_{symbol.replace('/', '_')}_{int(time.time())}",
-                                "symbol": symbol,
-                                "side": "buy",
-                                "type": "take_profit",
-                                "stop_price": float(tp),
-                                "quantity": quantity,
-                                "direction": "below",
-                            })
-                            logger.info(f"Registered Take Profit at ${tp:.2f} for short {symbol}")
+                        return None
 
                     result["strategy"] = self.strategy
                     result["ai_confidence"] = debate_result.get("confidence", 50)
                     self._trade_count += 1
-                    return result
+                    return cast(dict[str, Any], result)
 
                 else:
                     logger.debug(f"[{symbol}] No execution needed for HOLD")
                     return None
             else:
                 # Real exchange orders routing
-                loop = asyncio.get_event_loop()
-                
+                loop = asyncio.get_running_loop()
+
                 if action == "BUY":
                     logger.info(f"🚨 Sending real market BUY order to exchange for {symbol}...")
                     order = await loop.run_in_executor(
@@ -1011,10 +1129,10 @@ class AITradingBot:
                             amount=quantity
                         )
                     )
-                    
+
                     filled_qty = float(order.get("filled", quantity))
                     avg_fill_price = float(order.get("average", price) or price)
-                    
+
                     result = {
                         "trade_id": order.get("id"),
                         "symbol": symbol,
@@ -1026,14 +1144,14 @@ class AITradingBot:
                         "timestamp": ts,
                         "order_info": order,
                     }
-                    
+
                     self._positions[symbol] = {
                         "side": "LONG",
                         "quantity": filled_qty,
                         "entry_price": avg_fill_price,
                         "entry_time": ts,
                     }
-                    
+
                     sl = debate_result.get("stop_loss", 0)
                     tp = debate_result.get("take_profit", 0)
                     if sl and sl > 0:
@@ -1056,7 +1174,7 @@ class AITradingBot:
                             "quantity": filled_qty,
                             "direction": "above",
                         })
-                    
+
                     self._trade_count += 1
                     result["strategy"] = self.strategy
                     result["ai_confidence"] = debate_result.get("confidence", 50)
@@ -1066,11 +1184,18 @@ class AITradingBot:
 
                 elif action == "SELL":
                     logger.info(f"🚨 Sending real market SELL order to exchange for {symbol}...")
-                    
-                    sell_quantity = quantity
+
+                    sell_quantity = 0.0
                     if symbol in self._positions:
                         sell_quantity = self._positions[symbol]["quantity"]
-                    
+                    elif symbol in portfolio.get("positions", {}):
+                        sell_quantity = float(
+                            portfolio["positions"][symbol].get("quantity", 0.0)
+                        )
+                    else:
+                        logger.warning(f"[{symbol}] SELL rejected: no position to close")
+                        return None
+
                     order = await loop.run_in_executor(
                         None,
                         lambda: self._order_manager.create_market_order(
@@ -1079,10 +1204,10 @@ class AITradingBot:
                             amount=sell_quantity
                         )
                     )
-                    
+
                     filled_qty = float(order.get("filled", sell_quantity))
                     avg_fill_price = float(order.get("average", price) or price)
-                    
+
                     pnl = 0.0
                     pnl_pct = 0.0
                     if symbol in self._positions:
@@ -1091,7 +1216,7 @@ class AITradingBot:
                         pnl_pct = ((avg_fill_price - entry_price) / entry_price * 100) if entry_price > 0 else 0.0
                         del self._positions[symbol]
                         self._pending_sl_tp = [o for o in self._pending_sl_tp if o["symbol"] != symbol]
-                    
+
                     result = {
                         "trade_id": order.get("id"),
                         "symbol": symbol,
@@ -1105,28 +1230,30 @@ class AITradingBot:
                         "timestamp": ts,
                         "order_info": order,
                     }
-                    
+
                     self._trade_count += 1
                     result["strategy"] = self.strategy
                     result["ai_confidence"] = debate_result.get("confidence", 50)
                     return result
 
+                return None
+
         except Exception as exc:
             logger.error(f"[{symbol}] Trade execution failed: {exc}")
             return None
 
-    async def _log_trade_and_debate(
+    async def _log_trade(
         self,
         symbol: str,
         trade_result: dict[str, Any],
         debate_result: dict[str, Any],
     ) -> None:
-        """Log trade and debate result to memory."""
+        """Log an executed trade to memory."""
         if self._trade_memory is None:
             return
 
         try:
-            ts = datetime.now(timezone.utc).isoformat()
+            ts = datetime.now(UTC).isoformat()
 
             # Log trade
             trade_data = {
@@ -1147,9 +1274,22 @@ class AITradingBot:
 
             await self._trade_memory.log_trade(trade_data)
 
-            # Log debate
+        except Exception as exc:
+            logger.error(f"Failed to log trade: {exc}")
+
+    async def _log_debate_decision(
+        self,
+        symbol: str,
+        debate_result: dict[str, Any],
+    ) -> None:
+        """Log every AI debate decision before execution outcomes."""
+        if self._trade_memory is None:
+            return
+
+        try:
+            rounds = debate_result.get("rounds", [])
             debate_data = {
-                "timestamp": ts,
+                "timestamp": datetime.now(UTC).isoformat(),
                 "symbol": symbol,
                 "bull_arg": debate_result.get("bull_argument", ""),
                 "bear_arg": debate_result.get("bear_argument", ""),
@@ -1158,12 +1298,13 @@ class AITradingBot:
                 "judge_confidence": debate_result.get("confidence", 50),
                 "risk_action": debate_result.get("risk_decision", "APPROVE"),
                 "risk_reasoning": debate_result.get("risk_reasoning", ""),
+                "rounds": len(rounds) if isinstance(rounds, list) else int(rounds or 0),
+                "latency_seconds": debate_result.get("metadata", {}).get("total_time_seconds", 0.0),
             }
 
             await self._trade_memory.log_debate(debate_data)
-
         except Exception as exc:
-            logger.error(f"Failed to log trade/debate: {exc}")
+            logger.error(f"Failed to log debate decision: {exc}")
 
     async def _send_trade_alert(
         self,
@@ -1207,7 +1348,7 @@ class AITradingBot:
         if self._weekly_reviewer is None:
             return
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         # Run review every 7 days
         if (
@@ -1216,7 +1357,7 @@ class AITradingBot:
         ):
             try:
                 logger.info("📊 Running weekly review...")
-                report = self._weekly_reviewer.generate_report()
+                report = await self._weekly_reviewer.generate_report()
                 self._weekly_reviewer.save_report(report)
                 self._last_weekly_review = now
 
@@ -1288,7 +1429,7 @@ def run_backtest(config: Any, days: int = 90) -> None:
     # Use SMA Cross as proxy for backtest (AI debate is too slow for backtest)
     from src.strategy.sma_cross import SMACrossStrategy
 
-    end_date = datetime.now(timezone.utc)
+    end_date = datetime.now(UTC)
     start_date = end_date - timedelta(days=days)
 
     symbol = config.trading.symbols[0] if config.trading.symbols else "BTC/USDT"

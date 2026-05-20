@@ -157,7 +157,7 @@ async with TradeMemory() as memory:
 
     # Weekly review
     reviewer = WeeklyReviewer(memory)
-    report = reviewer.generate_report()
+    report = await reviewer.generate_report()
     reviewer.save_report(report)
 
     # Extract DSPy optimization insights

@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
-from typing import Any
+from datetime import UTC, datetime
+from typing import Any, cast
 
 from loguru import logger
 
@@ -14,29 +14,40 @@ from .exchange_client import ExchangeClient
 class OrderManager:
     """Manages order creation, cancellation, and status tracking."""
 
-    def __init__(self, exchange_client: ExchangeClient, dry_run: bool = False) -> None:
+    def __init__(
+        self, exchange_client: ExchangeClient | None, dry_run: bool = False
+    ) -> None:
         """Initialize order manager.
 
         Args:
             exchange_client: Connected exchange client instance.
             dry_run: If True, simulate orders without calling the exchange.
         """
+        if exchange_client is None and not dry_run:
+            raise ValueError("exchange_client is required when dry_run=False")
+
         self._client = exchange_client
         self._dry_run = dry_run
         self._dry_run_orders: dict[str, dict] = {}
         self._dry_run_order_counter = 0
 
+    def _exchange(self) -> Any:
+        """Return the configured exchange object for live orders."""
+        if self._client is None:
+            raise RuntimeError("Exchange client is required for live order operations")
+        return self._client.exchange
+
     def _precision_amount(self, symbol: str, amount: float) -> float:
         """Format amount to exchange precision."""
         if self._dry_run:
             return amount
-        return self._client.exchange.amount_to_precision(symbol, amount)
+        return float(self._exchange().amount_to_precision(symbol, amount))
 
     def _precision_price(self, symbol: str, price: float) -> float:
         """Format price to exchange precision."""
         if self._dry_run:
             return price
-        return self._client.exchange.price_to_precision(symbol, price)
+        return float(self._exchange().price_to_precision(symbol, price))
 
     def _make_dry_run_id(self) -> str:
         """Generate a dry-run order ID."""
@@ -66,8 +77,8 @@ class OrderManager:
             "filled": 0.0,
             "remaining": amount,
             "cost": 0.0,
-            "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000),
-            "datetime": datetime.now(timezone.utc).isoformat(),
+            "timestamp": int(datetime.now(UTC).timestamp() * 1000),
+            "datetime": datetime.now(UTC).isoformat(),
             "dry_run": True,
         }
         self._dry_run_orders[order_id] = order
@@ -97,11 +108,12 @@ class OrderManager:
                     order_id, symbol, "market", side, amount, price=0.0
                 )
 
-            precise_amount = self._client.exchange.amount_to_precision(symbol, amount)
+            exchange = self._exchange()
+            precise_amount = exchange.amount_to_precision(symbol, amount)
             logger.info(f"Creating market {side} order: {precise_amount} {symbol}")
-            return self._client.exchange.create_market_order(
+            return cast(dict, exchange.create_market_order(
                 symbol, side, precise_amount
-            )
+            ))
         except Exception as e:
             logger.error(f"Failed to create market order: {e}")
             raise
@@ -131,12 +143,13 @@ class OrderManager:
                     order_id, symbol, "limit", side, amount, price=price
                 )
 
-            precise_amount = self._client.exchange.amount_to_precision(symbol, amount)
-            precise_price = self._client.exchange.price_to_precision(symbol, price)
+            exchange = self._exchange()
+            precise_amount = exchange.amount_to_precision(symbol, amount)
+            precise_price = exchange.price_to_precision(symbol, price)
             logger.info(f"Creating limit {side} order: {precise_amount} {symbol} @ {precise_price}")
-            return self._client.exchange.create_order(
+            return cast(dict, exchange.create_order(
                 symbol, "limit", side, precise_amount, precise_price
-            )
+            ))
         except Exception as e:
             logger.error(f"Failed to create limit order: {e}")
             raise
@@ -169,18 +182,19 @@ class OrderManager:
                     price=limit_price, stop_price=stop_price
                 )
 
-            precise_amount = self._client.exchange.amount_to_precision(symbol, amount)
-            precise_stop = self._client.exchange.price_to_precision(symbol, stop_price)
-            precise_limit = self._client.exchange.price_to_precision(symbol, limit_price)
+            exchange = self._exchange()
+            precise_amount = exchange.amount_to_precision(symbol, amount)
+            precise_stop = exchange.price_to_precision(symbol, stop_price)
+            precise_limit = exchange.price_to_precision(symbol, limit_price)
 
             params = {"stopPrice": precise_stop}
             logger.info(
                 f"Creating stop-loss {side} order: {precise_amount} {symbol} "
                 f"stop={precise_stop} limit={precise_limit}"
             )
-            return self._client.exchange.create_order(
+            return cast(dict, exchange.create_order(
                 symbol, "stop_loss_limit", side, precise_amount, precise_limit, params
-            )
+            ))
         except Exception as e:
             logger.error(f"Failed to create stop-loss order: {e}")
             raise
@@ -213,18 +227,19 @@ class OrderManager:
                     price=limit_price, stop_price=stop_price
                 )
 
-            precise_amount = self._client.exchange.amount_to_precision(symbol, amount)
-            precise_stop = self._client.exchange.price_to_precision(symbol, stop_price)
-            precise_limit = self._client.exchange.price_to_precision(symbol, limit_price)
+            exchange = self._exchange()
+            precise_amount = exchange.amount_to_precision(symbol, amount)
+            precise_stop = exchange.price_to_precision(symbol, stop_price)
+            precise_limit = exchange.price_to_precision(symbol, limit_price)
 
             params = {"stopPrice": precise_stop}
             logger.info(
                 f"Creating take-profit {side} order: {precise_amount} {symbol} "
                 f"stop={precise_stop} limit={precise_limit}"
             )
-            return self._client.exchange.create_order(
+            return cast(dict, exchange.create_order(
                 symbol, "take_profit_limit", side, precise_amount, precise_limit, params
-            )
+            ))
         except Exception as e:
             logger.error(f"Failed to create take-profit order: {e}")
             raise
@@ -318,7 +333,7 @@ class OrderManager:
                 return {"id": order_id, "status": "not_found"}
 
             logger.info(f"Canceling order {order_id} for {symbol}")
-            return self._client.exchange.cancel_order(order_id, symbol)
+            return cast(dict, self._exchange().cancel_order(order_id, symbol))
         except Exception as e:
             logger.error(f"Failed to cancel order {order_id}: {e}")
             raise
@@ -343,7 +358,7 @@ class OrderManager:
                 return results
 
             logger.info(f"Canceling all orders for {symbol}")
-            return self._client.exchange.cancel_all_orders(symbol)
+            return cast(list[dict], self._exchange().cancel_all_orders(symbol))
         except Exception as e:
             logger.error(f"Failed to cancel all orders for {symbol}: {e}")
             raise
@@ -361,11 +376,11 @@ class OrderManager:
         try:
             if self._dry_run:
                 if order_id in self._dry_run_orders:
-                    return self._dry_run_orders[order_id].get("status", "unknown")
+                    return str(self._dry_run_orders[order_id].get("status", "unknown"))
                 return "not_found"
 
-            order = self._client.exchange.fetch_order(order_id, symbol)
-            return order.get("status", "unknown")
+            order = self._exchange().fetch_order(order_id, symbol)
+            return str(order.get("status", "unknown"))
         except Exception as e:
             logger.error(f"Failed to get order status for {order_id}: {e}")
             raise

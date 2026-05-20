@@ -26,7 +26,7 @@ Usage:
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -375,10 +375,7 @@ class DSPyOptimizer:
             return self._program
 
         # Select metric function
-        if metric == "pnl_weighted":
-            metric_fn = pnl_weighted_metric
-        else:
-            metric_fn = sharpe_metric
+        metric_fn = pnl_weighted_metric if metric == "pnl_weighted" else sharpe_metric
 
         # Split into train/eval
         train_size = max(3, int(len(examples) * 0.7))
@@ -440,7 +437,7 @@ class DSPyOptimizer:
             raise RuntimeError("No program to save. Call setup_program() first.")
 
         if path is None:
-            timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
             dirpath = Path("config/optimized_prompts")
             dirpath.mkdir(parents=True, exist_ok=True)
             filepath = dirpath / f"dspy_prompts_{timestamp}.json"
@@ -452,7 +449,7 @@ class DSPyOptimizer:
         try:
             # DSPy programs can be saved via their internal state
             program_data = {
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "llm_model": self._llm_model,
                 "optimized": prog is self._optimized_program,
                 "predictor_type": "ChainOfThought",
@@ -468,7 +465,7 @@ class DSPyOptimizer:
             logger.warning(f"[DSPyOptimizer] Failed to save prompts: {exc}")
             # Fallback: save minimal state
             fallback_data = {
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "llm_model": self._llm_model,
                 "optimized": prog is self._optimized_program,
                 "error": str(exc),

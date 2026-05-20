@@ -3,7 +3,9 @@ Unit tests for QualityGates module.
 """
 
 import time
+
 import pytest
+
 from src.data.quality_gates import QualityGates
 
 

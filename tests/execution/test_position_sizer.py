@@ -3,6 +3,7 @@ Unit tests for PositionSizer module.
 """
 
 import pytest
+
 from src.execution.position_sizer import PositionSizer
 
 

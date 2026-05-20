@@ -3,6 +3,7 @@ Unit tests for the Stop-Loss / Take-Profit (SL/TP) simulation within the DryRunE
 """
 
 import pytest
+
 from src.execution.dry_run import DryRunExecutor
 
 
@@ -16,12 +17,12 @@ class TestSLTPIntegration:
         # 1. Open a LONG position: Buy 0.1 BTC at 50,000 USDT
         buy_result = executor.simulate_buy("BTC/USDT", 0.1, 50000.0)
         assert buy_result["symbol"] == "BTC/USDT"
-        
+
         # Verify position was opened
         portfolio = executor.get_portfolio()
         assert "BTC/USDT" in portfolio["positions"]
         assert portfolio["positions"]["BTC/USDT"]["quantity"] == 0.1
-        
+
         # 2. Define Stop Loss (SL) order: trigger when price drops below 49,000 USDT
         sl_order = {
             "id": "sl-001",
@@ -32,7 +33,7 @@ class TestSLTPIntegration:
             "quantity": 0.1,
             "direction": "below",
         }
-        
+
         # Test case A: Price drops to 49,500 USDT (not yet triggering SL)
         triggered_none = executor.simulate_sl_tp([sl_order], {"BTC/USDT": 49500.0})
         assert len(triggered_none) == 0

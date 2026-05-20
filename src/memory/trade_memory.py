@@ -24,8 +24,9 @@ Usage:
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
-from typing import Any
+from collections.abc import Awaitable
+from datetime import UTC, datetime
+from typing import Any, cast
 
 from loguru import logger
 from pydantic import BaseModel, Field
@@ -45,7 +46,7 @@ except ImportError:
 class TradeRecord(BaseModel):
     """Structured trade record for logging."""
 
-    timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    timestamp: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
     symbol: str = Field(..., description="Trading pair, e.g. BTC/USDT")
     side: str = Field(..., description="BUY or SELL")
     quantity: float = Field(..., gt=0, description="Trade quantity")
@@ -65,7 +66,7 @@ class TradeRecord(BaseModel):
 class DebateRecord(BaseModel):
     """Structured debate result for logging."""
 
-    timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    timestamp: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
     symbol: str = Field(..., description="Trading pair")
     bull_arg: str = Field(default="", description="Bull agent's argument summary")
     bear_arg: str = Field(default="", description="Bear agent's argument summary")
@@ -214,7 +215,7 @@ class TradeMemory:
                             decode_responses=True,
                             encoding="utf-8",
                         )
-                        await self._redis.ping()
+                        await cast(Awaitable[Any], self._redis.ping())
                         logger.info(f"Redis connected to {self._redis_url}")
                     except Exception:
                         logger.warning("Redis connection failed, continuing without cache")
@@ -298,7 +299,7 @@ class TradeMemory:
         # Cache in Redis
         await self._cache_trade(record)
 
-        return row_id
+        return int(row_id)
 
     async def log_debate(self, debate_result: dict[str, Any]) -> int:
         """
@@ -345,7 +346,7 @@ class TradeMemory:
             f"→ {record.judge_action} (confidence={record.judge_confidence:.1f})"
         )
 
-        return row_id
+        return int(row_id)
 
     # ─── Redis Caching ─────────────────────────────────────────────────
 
@@ -356,7 +357,7 @@ class TradeMemory:
 
         try:
             key = f"trade:latest:{record.symbol}"
-            await self._redis.hset(
+            await cast(Awaitable[Any], self._redis.hset(
                 key,
                 mapping={
                     "timestamp": record.timestamp,
@@ -366,7 +367,7 @@ class TradeMemory:
                     "pnl": str(record.pnl),
                     "strategy": record.strategy,
                 },
-            )
+            ))
             # Expire after 24 hours
             await self._redis.expire(key, 86400)
         except Exception:
@@ -575,9 +576,9 @@ class TradeMemory:
                     COALESCE(SUM(pnl), 0) as total_pnl,
                     COALESCE(AVG(pnl), 0) as avg_pnl,
                     COALESCE(MAX(pnl), 0) as best_trade,
-                    COALESCE(MAX(pnl) FILTER (WHERE pnl < 0), 0) as worst_trade,
+                    COALESCE(MIN(pnl), 0) as worst_trade,
                     COALESCE(SUM(pnl) FILTER (WHERE pnl > 0), 0) as gross_profit,
-                    COALESCE(ABS(SUM(pnl)) FILTER (WHERE pnl < 0), 0) as gross_loss
+                    COALESCE(ABS(SUM(pnl) FILTER (WHERE pnl < 0)), 0) as gross_loss
                 FROM trades WHERE {where}
                 """,
                 *params,
@@ -810,23 +811,9 @@ class TradeMemory:
                 }
 
             # Pattern 5: Risk action outcomes
-            risk_rows = await conn.fetch(
-                """
-                SELECT judge_action,
-                       COUNT(*) as total,
-                       COUNT(*) FILTER (WHERE pnl > 0) as wins,
-                       COALESCE(AVG(pnl), 0) as avg_pnl
-                FROM trades
-                WHERE side = 'SELL' AND pnl != 0 AND judge_action IS NOT NULL
-                GROUP BY judge_action
-                """
-            )
-
-            # Note: judge_action stored in debate_result JSONB, need different approach
-            # For now, use debates table joined approach
             debate_rows = await conn.fetch(
                 """
-                SELECT judge_action,
+                SELECT risk_action,
                        COUNT(*) as total,
                        COUNT(*) FILTER (WHERE pnl > 0) as wins,
                        COALESCE(AVG(pnl), 0) as avg_pnl
@@ -835,14 +822,14 @@ class TradeMemory:
                     AND t.timestamp BETWEEN d.timestamp
                     AND d.timestamp + INTERVAL '1 hour'
                 WHERE t.side = 'SELL' AND t.pnl != 0
-                GROUP BY d.judge_action
+                GROUP BY d.risk_action
                 """
             )
 
             for row in debate_rows:
                 win_rate = (int(row["wins"]) / int(row["total"]) * 100) if row["total"] > 0 else 0
                 patterns["risk_action_outcomes"].append({
-                    "judge_action": row["judge_action"],
+                    "risk_action": row["risk_action"],
                     "total_trades": int(row["total"]),
                     "win_rate": round(win_rate, 1),
                     "avg_pnl": round(float(row["avg_pnl"]), 2),
@@ -907,11 +894,11 @@ class TradeMemory:
 
         # Annualize (assuming ~250 trading periods)
         sharpe = (avg - risk_free_rate / 250) / std * (250 ** 0.5)
-        return round(sharpe, 3)
+        return float(round(sharpe, 3))
 
     # ─── Context Manager ───────────────────────────────────────────────
 
-    async def __aenter__(self) -> "TradeMemory":
+    async def __aenter__(self) -> TradeMemory:
         await self.connect()
         return self
 

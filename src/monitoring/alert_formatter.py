@@ -196,7 +196,7 @@ class AlertFormatter:
         context : str
             Additional context about where the error occurred
         """
-        msg = f"🚨 <b>ERROR ALERT</b>\n"
+        msg = "🚨 <b>ERROR ALERT</b>\n"
         if context:
             msg += f"<b>Context:</b> <code>{context}</code>\n"
         msg += f"<b>Error:</b>\n<code>{error_msg}</code>"

@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import random
 from datetime import datetime, timedelta
+from itertools import cycle
 
 import numpy as np
 import pandas as pd
-
 
 # ─── Formatting helpers ────────────────────────────────────────────────
 
@@ -122,11 +122,9 @@ def load_mock_data(
 
     # ── Generate trades ──
     trades = []
-    symbols_cycle = iter(_SYMBOLS)
-    strategies_cycle = iter(_STRATEGIES)
-
+    symbols_cycle = cycle(_SYMBOLS)
     for i in range(num_trades):
-        symbol = next(symbols_cycle, iter(_SYMBOLS)).__next__() if i % 4 == 0 else random.choice(_SYMBOLS)
+        symbol = next(symbols_cycle) if i % 4 == 0 else random.choice(_SYMBOLS)
         strategy = random.choice(_STRATEGIES)
         side = random.choice(_SIDES)
 
@@ -166,7 +164,7 @@ def load_mock_data(
         })
 
     # Sort trades by timestamp
-    trades.sort(key=lambda t: t["timestamp"])
+    trades.sort(key=lambda t: str(t["timestamp"]))
 
     # ── Generate debates ──
     debates = []
@@ -193,7 +191,7 @@ def load_mock_data(
             "actual_outcome": random.choice(["profitable", "loss", "breakeven"]),
         })
 
-    debates.sort(key=lambda d: d["timestamp"])
+    debates.sort(key=lambda d: str(d["timestamp"]))
 
     return {
         "trades": trades,

@@ -19,7 +19,7 @@ import json
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import optuna
 from loguru import logger
@@ -80,8 +80,8 @@ class ParameterOptimizer:
         end_date: str,
         ccxt_exchange: str = "binance",
         initial_capital: float = 100_000,
-        storage_path: Optional[str] = None,
-        results_dir: Optional[str] = None,
+        storage_path: str | None = None,
+        results_dir: str | None = None,
     ) -> None:
         self.strategy_class = strategy_class
         self.symbol = symbol
@@ -91,6 +91,7 @@ class ParameterOptimizer:
         self.initial_capital = initial_capital
 
         # Optuna storage — SQLite for persistence
+        self.storage: str | None
         if storage_path:
             self.storage = f"sqlite:///{storage_path}"
         else:
@@ -100,8 +101,8 @@ class ParameterOptimizer:
         self.results_dir = Path(results_dir) if results_dir else Path("results/optimization")
         self.results_dir.mkdir(parents=True, exist_ok=True)
 
-        self._study: Optional[optuna.study.Study] = None
-        self._best_params: Optional[dict[str, Any]] = None
+        self._study: optuna.study.Study | None = None
+        self._best_params: dict[str, Any] | None = None
 
     # ------------------------------------------------------------------ #
     #  Public API
@@ -112,9 +113,9 @@ class ParameterOptimizer:
         n_trials: int = 50,
         metric: str = "sharpe_ratio",
         direction: str = "maximize",
-        param_space: Optional[dict[str, tuple]] = None,
-        timeout: Optional[int] = None,
-        study_name: Optional[str] = None,
+        param_space: dict[str, tuple] | None = None,
+        timeout: int | None = None,
+        study_name: str | None = None,
         prune: bool = True,
     ) -> dict[str, Any]:
         """Run the Optuna optimisation study.
@@ -199,15 +200,15 @@ class ParameterOptimizer:
 
         return self._best_params
 
-    def get_study(self) -> Optional[optuna.study.Study]:
+    def get_study(self) -> optuna.study.Study | None:
         """Return the Optuna study object (after :meth:`optimize` is called)."""
         return self._study
 
-    def get_best_params(self) -> Optional[dict[str, Any]]:
+    def get_best_params(self) -> dict[str, Any] | None:
         """Return the best parameters found."""
         return self._best_params
 
-    def plot_results(self, output_path: Optional[str] = None) -> None:
+    def plot_results(self, output_path: str | None = None) -> None:
         """Generate and optionally save Optuna optimisation plots.
 
         Creates:
@@ -333,7 +334,7 @@ class ParameterOptimizer:
         if trial.should_prune():
             raise optuna.TrialPruned()
 
-        return value
+        return float(value)
 
     def _sample_params(
         self,

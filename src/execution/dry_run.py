@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any
+from datetime import UTC, datetime
 
 from loguru import logger
 
@@ -64,7 +63,7 @@ class DryRunExecutor:
 
         # Record initial equity
         self._record_equity(
-            datetime.now(timezone.utc).isoformat(), initial_balance
+            datetime.now(UTC).isoformat(), initial_balance
         )
 
     def _record_equity(self, timestamp: str, total_value: float) -> None:
@@ -109,7 +108,7 @@ class DryRunExecutor:
             ValueError: If insufficient cash.
         """
         if timestamp is None:
-            timestamp = datetime.now(timezone.utc).isoformat()
+            timestamp = datetime.now(UTC).isoformat()
 
         cost = quantity * price
         if cost > self._cash:
@@ -200,7 +199,7 @@ class DryRunExecutor:
             ValueError: If no position or insufficient quantity.
         """
         if timestamp is None:
-            timestamp = datetime.now(timezone.utc).isoformat()
+            timestamp = datetime.now(UTC).isoformat()
 
         if symbol not in self._positions:
             raise ValueError(f"No position found for {symbol}")
@@ -291,7 +290,7 @@ class DryRunExecutor:
             List of triggered trade results.
         """
         if timestamp is None:
-            timestamp = datetime.now(timezone.utc).isoformat()
+            timestamp = datetime.now(UTC).isoformat()
 
         triggered = []
         remaining = []
@@ -309,9 +308,7 @@ class DryRunExecutor:
 
             # Check trigger condition
             triggered_price = False
-            if direction == "below" and current_price <= stop_price:
-                triggered_price = True
-            elif direction == "above" and current_price >= stop_price:
+            if direction == "below" and current_price <= stop_price or direction == "above" and current_price >= stop_price:
                 triggered_price = True
 
             if triggered_price:
@@ -403,6 +400,6 @@ class DryRunExecutor:
         self._order_book.clear()
         self._trade_counter = 0
         self._record_equity(
-            datetime.now(timezone.utc).isoformat(), self._initial_balance
+            datetime.now(UTC).isoformat(), self._initial_balance
         )
         logger.info("[DRY-RUN] Executor reset to initial state")

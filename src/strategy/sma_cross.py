@@ -1,7 +1,6 @@
 """SMA crossover + RSI filter strategy."""
 
 from loguru import logger
-from lumibot.entities import Asset
 
 from .base import BaseStrategy
 
@@ -53,8 +52,8 @@ class SMACrossStrategy(BaseStrategy):
         self.vars.rsi_oversold = self.parameters["rsi_oversold"]
 
         # Track previous indicator values for crossover detection
-        self.vars.prev_sma_fast: float = None
-        self.vars.prev_sma_slow: float = None
+        self.vars.prev_sma_fast = None
+        self.vars.prev_sma_slow = None
 
         logger.info(
             "SMACrossStrategy params: fast={}, slow={}, rsi_period={}, "
@@ -206,7 +205,7 @@ class SMACrossStrategy(BaseStrategy):
 
         bullish_cross = (prev_fast <= prev_slow) and (sma_fast > sma_slow)
         bearish_cross = (prev_fast >= prev_slow) and (sma_fast < sma_slow)
-        
+
         rsi_overbought = rsi > self.parameters.get("rsi_overbought", 70)
         rsi_safe = rsi < self.parameters.get("rsi_overbought", 70)
 

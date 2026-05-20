@@ -10,7 +10,6 @@ from pathlib import Path
 
 import pandas as pd
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import streamlit as st
 
 # ─── Path setup ────────────────────────────────────────────────────────
@@ -18,7 +17,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.dashboard_utils import (
+from src.dashboard_utils import (  # noqa: E402
     color_pnl,
     format_currency,
     format_pct,
@@ -166,7 +165,7 @@ if page == "📊 Overview":
         ))
 
     fig_equity.update_layout(**PLOTLY_LAYOUT, height=380, xaxis_title="", yaxis_title="Portfolio Value ($)")
-    st.plotly_chart(fig_equity, use_container_width=True)
+    st.plotly_chart(fig_equity, width="stretch")
 
     # Portfolio allocation + Bot health
     col_a, col_b = st.columns(2)
@@ -185,7 +184,7 @@ if page == "📊 Overview":
             textfont=dict(color="#E6EDF3"),
         )])
         fig_pie.update_layout(**PLOTLY_LAYOUT, height=320, showlegend=False)
-        st.plotly_chart(fig_pie, use_container_width=True)
+        st.plotly_chart(fig_pie, width="stretch")
 
     with col_b:
         st.subheader("Bot Health Status")
@@ -211,7 +210,7 @@ if page == "📊 Overview":
     display_recent = recent[["timestamp", "symbol", "side", "quantity", "price", "pnl", "strategy"]].copy()
     display_recent["timestamp"] = display_recent["timestamp"].dt.strftime("%Y-%m-%d %H:%M")
     display_recent["pnl"] = display_recent["pnl"].apply(color_pnl)
-    st.dataframe(display_recent, use_container_width=True, hide_index=True)
+    st.dataframe(display_recent, width="stretch", hide_index=True)
 
 
 # ======================================================================
@@ -266,7 +265,7 @@ elif page == "📈 Trade Analysis":
     display["timestamp"] = display["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S")
     display["pnl"] = display["pnl"].apply(color_pnl)
     display["pnl_pct"] = display["pnl_pct"].apply(lambda v: f"{v:+.2f}%")
-    st.dataframe(display, use_container_width=True, hide_index=True, height=350)
+    st.dataframe(display, width="stretch", hide_index=True, height=350)
 
     st.markdown("---")
 
@@ -299,7 +298,7 @@ elif page == "📈 Trade Analysis":
             xaxis_title="P&L ($)",
             yaxis_title="Count",
         )
-        st.plotly_chart(fig_hist, use_container_width=True)
+        st.plotly_chart(fig_hist, width="stretch")
 
     with col_c2:
         st.subheader("Win / Loss Ratio")
@@ -330,7 +329,7 @@ elif page == "📈 Trade Analysis":
             number=dict(font=dict(size=36, color="#E6EDF3")),
         ))
         fig_gauge.update_layout(**PLOTLY_LAYOUT, height=320)
-        st.plotly_chart(fig_gauge, use_container_width=True)
+        st.plotly_chart(fig_gauge, width="stretch")
 
     # Charts row 2
     col_c3, col_c4 = st.columns(2)
@@ -353,7 +352,7 @@ elif page == "📈 Trade Analysis":
             xaxis_title="Date",
             yaxis_title="Cumulative P&L ($)",
         )
-        st.plotly_chart(fig_cum, use_container_width=True)
+        st.plotly_chart(fig_cum, width="stretch")
 
     with col_c4:
         st.subheader("Avg Hold Time by Symbol")
@@ -386,7 +385,7 @@ elif page == "📈 Trade Analysis":
                 yaxis_title="Symbol",
                 margin=dict(l=80, r=50, t=30, b=50),
             )
-            st.plotly_chart(fig_hold, use_container_width=True)
+            st.plotly_chart(fig_hold, width="stretch")
         else:
             st.info("Not enough data to compute hold times.")
 
@@ -406,7 +405,7 @@ elif page == "🤖 AI Debate":
     debate_display["timestamp"] = debate_display["timestamp"].dt.strftime("%Y-%m-%d %H:%M")
     debate_display["judge_confidence"] = debate_display["judge_confidence"].apply(lambda v: f"{v:.1f}%")
     debate_display["latency_seconds"] = debate_display["latency_seconds"].apply(lambda v: f"{v:.1f}s")
-    st.dataframe(debate_display, use_container_width=True, hide_index=True, height=350)
+    st.dataframe(debate_display, width="stretch", hide_index=True, height=350)
 
     st.markdown("---")
 
@@ -431,7 +430,7 @@ elif page == "🤖 AI Debate":
             xaxis_title="Judge Confidence (%)",
             yaxis_title="Count",
         )
-        st.plotly_chart(fig_conf, use_container_width=True)
+        st.plotly_chart(fig_conf, width="stretch")
 
     with col_d2:
         st.subheader("AI Accuracy vs Actual Outcomes")
@@ -474,7 +473,7 @@ elif page == "🤖 AI Debate":
                 xaxis_title="Confidence Bucket (%)",
                 yaxis_title="Prediction Accuracy (%)",
             )
-            st.plotly_chart(fig_acc, use_container_width=True)
+            st.plotly_chart(fig_acc, width="stretch")
         else:
             st.info("No outcome data available.")
 
@@ -493,7 +492,7 @@ elif page == "🤖 AI Debate":
             hole=0.4,
         ))
         fig_action.update_layout(**PLOTLY_LAYOUT, height=300, showlegend=False)
-        st.plotly_chart(fig_action, use_container_width=True)
+        st.plotly_chart(fig_action, width="stretch")
 
     with col_d4:
         st.subheader("Most Common Patterns Detected")
@@ -515,7 +514,7 @@ elif page == "🤖 AI Debate":
             xaxis_title="Occurrences",
             margin=dict(l=140, r=30, t=30, b=50),
         )
-        st.plotly_chart(fig_patterns, use_container_width=True)
+        st.plotly_chart(fig_patterns, width="stretch")
 
     # Debate stats summary
     st.markdown("---")
@@ -623,7 +622,7 @@ elif page == "⚙️ Settings":
     st.markdown("---")
 
     # Save button (mock)
-    if st.button("💾 Save Settings", type="primary", use_container_width=True):
+    if st.button("💾 Save Settings", type="primary", width="stretch"):
         st.success("Settings saved successfully! (Demo mode — not persisted)")
         st.info("In production, settings are saved to config/production.yaml")
 

@@ -4,12 +4,13 @@ Mocks ExchangeClient and OrderManager to verify that FullTradingBot and AITradin
 correctly interact with the exchange in testnet mode.
 """
 
-import pytest
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
-from datetime import datetime, timezone
 
-from src.main_full import FullTradingBot
+import pytest
+
 from src.main_ai import AITradingBot
+from src.main_full import FullTradingBot
 
 
 class MockConfig:
@@ -74,19 +75,19 @@ class TestCCXTIntegration:
     ):
         # Configure mocks
         mock_om_class.return_value = mock_order_manager
-        
+
         # Initialize bot in testnet mode
         bot = FullTradingBot(
             config=mock_config,
             mode="testnet",
             symbols=["BTC/USDT"],
         )
-        
+
         # Inject mocks
         bot._trade_memory = mock_db
         bot._order_manager = mock_order_manager
         bot._exchange_client = mock_order_manager._client
-        
+
         # Mock additional helpers
         bot._get_latest_price = AsyncMock(return_value=50000.0)
         bot._run_risk_check = AsyncMock(return_value=True)
@@ -110,13 +111,13 @@ class TestCCXTIntegration:
             price=50000.0,
             debate_result=debate_result
         )
-        
+
         assert exec_result is not None
         assert exec_result["order_info"]["status"] == "closed"
         mock_order_manager.create_market_order.assert_called_once_with(
             symbol="BTC/USDT",
             side="buy",
-            amount=0.02
+            amount=pytest.approx(0.05833333)
         )
 
     @pytest.mark.asyncio
@@ -127,19 +128,19 @@ class TestCCXTIntegration:
     ):
         # Configure mocks
         mock_om_class.return_value = mock_order_manager
-        
+
         # Initialize AI bot in testnet mode
         bot = AITradingBot(
             config=mock_config,
             mode="testnet",
             symbols=["BTC/USDT"],
         )
-        
+
         # Inject mocks
         bot._trade_memory = mock_db
         bot._order_manager = mock_order_manager
         bot._exchange_client = mock_order_manager._client
-        
+
         # Mock helpers
         bot._get_latest_price = AsyncMock(return_value=50000.0)
         bot._run_risk_check = AsyncMock(return_value=True)
@@ -153,13 +154,13 @@ class TestCCXTIntegration:
         # Reset mock call history first
         mock_order_manager.create_market_order.reset_mock()
         mock_order_manager.create_market_order.return_value["side"] = "sell"
-        
+
         # Populate positions to control the quantity sold
         bot._positions["BTC/USDT"] = {
             "side": "LONG",
             "quantity": 0.2,
             "entry_price": 50000.0,
-            "entry_time": datetime.now(timezone.utc).isoformat(),
+            "entry_time": datetime.now(UTC).isoformat(),
         }
 
         debate_result = {
@@ -174,7 +175,7 @@ class TestCCXTIntegration:
             price=50000.0,
             debate_result=debate_result
         )
-        
+
         assert exec_result is not None
         mock_order_manager.create_market_order.assert_called_once_with(
             symbol="BTC/USDT",

@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, cast
 
 import pandas as pd
 from loguru import logger
@@ -42,11 +42,11 @@ class BacktestRunner:
         symbol: str,
         start_date: str | datetime,
         end_date: str | datetime,
-        parameters: Optional[dict[str, Any]] = None,
+        parameters: dict[str, Any] | None = None,
         ccxt_exchange: str = "binance",
         quote_asset: str = "USDT",
         initial_capital: float = 100_000,
-        benchmark_asset: Optional[str] = None,
+        benchmark_asset: str | None = None,
     ) -> None:
         self.strategy_class = strategy_class
         self.symbol = symbol
@@ -75,7 +75,7 @@ class BacktestRunner:
         if parameters:
             self.parameters.update(parameters)
 
-        self._results: Optional[dict[str, Any]] = None
+        self._results: dict[str, Any] | None = None
         self._strategy_instance = None
 
     def run(self) -> dict[str, Any]:
@@ -128,7 +128,7 @@ class BacktestRunner:
         self._strategy_instance = strat
 
         logger.info("Backtest completed.")
-        return results
+        return cast(dict[str, Any], results)
 
     def get_results(self) -> dict[str, Any]:
         """Extract and summarise key metrics from the backtest results.
@@ -179,8 +179,8 @@ class BacktestRunner:
         return extracted
 
     def plot_results(
-        self, output_path: Optional[str] = None
-    ) -> Optional[str]:
+        self, output_path: str | None = None
+    ) -> str | None:
         """Create a Plotly chart showing price, indicators, and trades.
 
         Parameters
@@ -294,7 +294,7 @@ class BacktestRunner:
 # ------------------------------------------------------------------- #
 
 
-def _safe_float(data: dict, key: str) -> Optional[float]:
+def _safe_float(data: dict, key: str) -> float | None:
     """Safely extract a float from a dict."""
     val = data.get(key)
     if val is None:
@@ -305,7 +305,7 @@ def _safe_float(data: dict, key: str) -> Optional[float]:
         return None
 
 
-def _safe_int(data: dict, key: str) -> Optional[int]:
+def _safe_int(data: dict, key: str) -> int | None:
     """Safely extract an int from a dict."""
     val = data.get(key)
     if val is None:
@@ -316,7 +316,7 @@ def _safe_int(data: dict, key: str) -> Optional[int]:
         return None
 
 
-def _get_equity_curve(results: dict[str, Any]) -> Optional[pd.Series]:
+def _get_equity_curve(results: dict[str, Any]) -> pd.Series | None:
     """Extract equity curve from Lumibot results."""
     # Try common keys
     for key in ("equity_curve", "portfolio_value", "portfolio", "value"):
@@ -341,6 +341,6 @@ def _get_trades(results: dict[str, Any]) -> list[dict]:
         val = results.get(key)
         if val is not None and isinstance(val, (list, pd.DataFrame)):
             if isinstance(val, pd.DataFrame):
-                return val.to_dict(orient="records")
-            return val
+                return cast(list[dict], val.to_dict(orient="records"))
+            return list(val)
     return []

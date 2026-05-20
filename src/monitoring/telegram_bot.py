@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
+from datetime import UTC
 from typing import TYPE_CHECKING, Any
 
-from telegram import Update
+from telegram import Bot, Update
 from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
@@ -58,6 +58,13 @@ class TelegramBot:
         self._total_value: float = 0.0
         self._win_rate: float = 0.0
         self._is_running: bool = False
+
+    async def _reply(self, update: Update, message: str) -> None:
+        """Reply to a command update when Telegram included a message."""
+        if update.message is None:
+            logger.warning("Received Telegram command update without a message.")
+            return
+        await update.message.reply_text(message, parse_mode=ParseMode.HTML)
 
     # ------------------------------------------------------------------
     # Public state setters (called by other modules)
@@ -134,7 +141,7 @@ class TelegramBot:
             "  /start_bot — Re-arm after kill switch\n"
             "  /pnl — Today's P&L summary"
         )
-        await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+        await self._reply(update, msg)
 
     async def _cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /status — show trading status."""
@@ -147,7 +154,7 @@ class TelegramBot:
             total_value=self._total_value,
             win_rate=self._win_rate,
         )
-        await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+        await self._reply(update, msg)
 
     async def _cmd_balance(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /balance — show portfolio balance."""
@@ -156,19 +163,20 @@ class TelegramBot:
             f"<b>Total Value:</b> <code>${self._total_value:,.2f}</code>\n"
             f"<b>Daily P&L:</b> {'🟢' if self._daily_pnl >= 0 else '🔴'} <code>${self._daily_pnl:+,.2f}</code>"
         )
-        await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+        await self._reply(update, msg)
 
     async def _cmd_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /stop — trigger kill switch."""
-        from .alert_formatter import AlertFormatter
-        from datetime import datetime, timezone
+        from datetime import datetime
 
-        ts = datetime.now(timezone.utc).isoformat()
+        from .alert_formatter import AlertFormatter
+
+        ts = datetime.now(UTC).isoformat()
         msg = AlertFormatter.format_kill_switch(
             reason="Manual stop via /stop command",
             timestamp=ts,
         )
-        await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+        await self._reply(update, msg)
         self._is_running = False
 
         # Log the kill-switch event
@@ -182,7 +190,7 @@ class TelegramBot:
             "✅ <b>BOT RE-ARMED</b>\n"
             "Trading has been resumed. Monitor /status for updates."
         )
-        await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+        await self._reply(update, msg)
 
         if self._logger:
             self._logger.log_info("Bot re-armed via Telegram /start_bot")
@@ -195,7 +203,7 @@ class TelegramBot:
             f"{pnl_emoji} <b>P&L:</b> <code>${self._daily_pnl:+,.2f}</code>\n"
             f"<b>Win Rate:</b> <code>{self._win_rate:.1f}%</code>"
         )
-        await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+        await self._reply(update, msg)
 
     # ------------------------------------------------------------------
     # Alert-sending methods (called by other modules)
@@ -211,6 +219,17 @@ class TelegramBot:
         parse_mode : str
             "HTML" (default) or "Markdown"
         """
+        pm = ParseMode.HTML if parse_mode == "HTML" else ParseMode.MARKDOWN
+        if not self._application:
+            logger.info("Telegram polling is not running; sending one-shot alert.")
+            bot = Bot(token=self._bot_token)
+            await bot.send_message(
+                chat_id=self._chat_id,
+                text=message,
+                parse_mode=pm,
+            )
+            return
+
         if not self._application:
             logger.warning("Cannot send alert — bot is not running.")
             return

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import statistics
+
 from loguru import logger
 
 
@@ -196,9 +197,8 @@ class QualityGates:
         # 2. Spread check (if bid/ask available)
         bid = trade_data.get("bid")
         ask = trade_data.get("ask")
-        if bid is not None and ask is not None:
-            if not self.check_spread(bid, ask):
-                return False, f"Spread exceeded threshold ({self.max_spread_pct}%)"
+        if bid is not None and ask is not None and not self.check_spread(bid, ask):
+            return False, f"Spread exceeded threshold ({self.max_spread_pct}%)"
 
         # 3. Price spike check
         if not self.check_price_spike(price, recent_prices):

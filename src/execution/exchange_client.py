@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import ccxt
 from loguru import logger
@@ -74,7 +74,7 @@ class ExchangeClient:
             Ticker dictionary with bid, ask, last, volume, etc.
         """
         logger.debug(f"Fetching ticker for {symbol}")
-        return self.exchange.fetch_ticker(symbol)
+        return cast(dict, self.exchange.fetch_ticker(symbol))
 
     def fetch_ohlcv(
         self,
@@ -93,7 +93,7 @@ class ExchangeClient:
             List of [timestamp, open, high, low, close, volume] lists.
         """
         logger.debug(f"Fetching {limit} {timeframe} candles for {symbol}")
-        return self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+        return cast(list[list], self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit))
 
     def fetch_balance(self) -> dict:
         """Fetch account balance.
@@ -104,7 +104,7 @@ class ExchangeClient:
         logger.debug("Fetching account balance")
         raw = self.exchange.fetch_balance()
         # Return only non-zero balances for readability
-        return raw
+        return cast(dict, raw)
 
     def fetch_open_orders(self, symbol: str | None = None) -> list[dict]:
         """Fetch open orders.
@@ -116,7 +116,7 @@ class ExchangeClient:
             List of open order dictionaries.
         """
         logger.debug(f"Fetching open orders for {symbol or 'all symbols'}")
-        return self.exchange.fetch_open_orders(symbol)
+        return cast(list[dict], self.exchange.fetch_open_orders(symbol))
 
     def fetch_order(self, order_id: str, symbol: str) -> dict:
         """Fetch a specific order by ID.
@@ -129,7 +129,7 @@ class ExchangeClient:
             Order dictionary.
         """
         logger.debug(f"Fetching order {order_id} for {symbol}")
-        return self.exchange.fetch_order(order_id, symbol)
+        return cast(dict, self.exchange.fetch_order(order_id, symbol))
 
     def close(self) -> None:
         """Clean up exchange connection."""

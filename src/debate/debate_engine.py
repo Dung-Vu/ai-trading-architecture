@@ -17,22 +17,15 @@ from loguru import logger
 
 try:
     from langgraph.graph import END, START, StateGraph
-except ImportError:
+except ImportError as exc:
     raise ImportError(
         "langgraph is required. Install with: pip install langgraph"
-    )
+    ) from exc
 from typing_extensions import TypedDict
 
 from .agents import BearAgent, BullAgent, DevilsAdvocate, JudgeAgent, RiskManagerAgent
 from .llm_client import LLMClient
 from .models import DebateConfig, DebateResult, DebateRound
-from .prompts import (
-    BEAR_SYSTEM_PROMPT,
-    BULL_SYSTEM_PROMPT,
-    DEVIL_SYSTEM_PROMPT,
-    JUDGE_SYSTEM_PROMPT,
-    RISK_MANAGER_SYSTEM_PROMPT,
-)
 
 
 # ─── LangGraph State ─────────────────────────────────────────────────
@@ -218,6 +211,7 @@ class DebateEngine:
 
         raw = self.bull.call_llm(state["market_data"], context)
         output = self.bull.parse_output(raw)
+        output_dict = output.model_dump() if hasattr(output, "model_dump") else output.dict()
 
         # Create debate round record
         round_record = {
@@ -230,7 +224,7 @@ class DebateEngine:
         }
 
         return {
-            "bull_output": raw,
+            "bull_output": output_dict,
             "debate_rounds": [*state["debate_rounds"], round_record],
         }
 
@@ -249,6 +243,7 @@ class DebateEngine:
 
         raw = self.bear.call_llm(state["market_data"], context)
         output = self.bear.parse_output(raw)
+        output_dict = output.model_dump() if hasattr(output, "model_dump") else output.dict()
 
         round_record = {
             "round_number": rnd,
@@ -260,12 +255,12 @@ class DebateEngine:
         }
 
         return {
-            "bear_output": raw,
+            "bear_output": output_dict,
             "debate_rounds": [*state["debate_rounds"], round_record],
         }
 
     def _devil_node(self, state: DebateState) -> dict[str, Any]:
-        """LangGraph node: Devil's Advocate challenges both sides."""
+        """LangGraph node: Devil's advocate challenges both sides."""
         rnd = state["current_round"]
         logger.info(f"[Debate] Round {rnd}: Devil challenging both sides")
 
@@ -288,6 +283,7 @@ class DebateEngine:
 
         raw = self.devil.call_llm(state["market_data"], context)
         output = self.devil.parse_output(raw)
+        output_dict = output.model_dump() if hasattr(output, "model_dump") else output.dict()
 
         round_record = {
             "round_number": rnd,
@@ -299,7 +295,7 @@ class DebateEngine:
         }
 
         return {
-            "devil_output": raw,
+            "devil_output": output_dict,
             "debate_rounds": [*state["debate_rounds"], round_record],
         }
 
@@ -366,6 +362,20 @@ class DebateEngine:
         action = judge.get("action", "HOLD")
         if risk_decision in ("REJECT", "FLATTEN"):
             action = "HOLD"
+
+        market_price = float(state.get("market_data", {}).get("price") or 0.0)
+        if market_price > 0:
+            if not stop_loss or float(stop_loss) <= 0:
+                stop_loss = market_price * (0.98 if action == "BUY" else 1.02)
+            if not take_profit or float(take_profit) <= 0:
+                take_profit = market_price * (1.04 if action == "BUY" else 0.96)
+        else:
+            stop_loss = float(stop_loss) if stop_loss and float(stop_loss) > 0 else 1.0
+            take_profit = (
+                float(take_profit)
+                if take_profit and float(take_profit) > 0
+                else 1.0
+            )
 
         # Extract round arguments
         bull_arg = ""

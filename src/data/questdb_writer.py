@@ -268,7 +268,7 @@ CREATE TABLE IF NOT EXISTS ticker_latest (
     # Context manager support
     # ------------------------------------------------------------------
 
-    def __enter__(self) -> "QuestDBWriter":
+    def __enter__(self) -> QuestDBWriter:
         self.connect()
         return self
 

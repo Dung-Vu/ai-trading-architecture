@@ -1,10 +1,7 @@
 """Performance metrics calculator for trading strategies."""
 
-from typing import Optional
-
 import numpy as np
 import pandas as pd
-from loguru import logger
 
 
 class MetricsCalculator:
@@ -175,7 +172,7 @@ class MetricsCalculator:
             # All trades profitable — return infinity as a large number
             return float("inf") if gross_profit > 0 else 0.0
 
-        return gross_profit / gross_loss
+        return float(gross_profit / gross_loss)
 
     @staticmethod
     def calc_expectancy(trades: list[dict]) -> float:
@@ -217,7 +214,7 @@ class MetricsCalculator:
     @staticmethod
     def summarize(
         trades: list[dict],
-        equity_curve: pd.Series,
+        equity_curve: pd.Series | None,
         risk_free_rate: float = 0.02,
     ) -> dict:
         """Compute all metrics and return them in a single dictionary.
@@ -239,7 +236,10 @@ class MetricsCalculator:
             ``expectancy``, ``total_trades``, ``avg_pnl``,
             ``total_pnl``, ``start_value``, ``end_value``.
         """
-        returns = equity_curve.pct_change().dropna() if not equity_curve.empty else pd.Series()
+        if equity_curve is None:
+            equity_curve = pd.Series(dtype=float)
+
+        returns = equity_curve.pct_change().dropna() if not equity_curve.empty else pd.Series(dtype=float)
 
         pnls = [t.get("pnl", 0) for t in trades]
         start_val = float(equity_curve.iloc[0]) if not equity_curve.empty else 0.0

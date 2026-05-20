@@ -2,8 +2,6 @@
 Unit tests for KillSwitch module.
 """
 
-import pytest
-from datetime import datetime
 from src.risk.kill_switch import KillSwitch
 
 

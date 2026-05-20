@@ -445,14 +445,14 @@ CREATE TABLE debates (
 Every 7 days (or on-demand):
 
 ┌──────────────────────────────────────────────────────┐
-│  WeeklyReviewer.generate_report()                    │
+│  await WeeklyReviewer.generate_report()              │
 │  ├── Query TradeMemory for last 7 days               │
 │  ├── Compute performance metrics                     │
 │  ├── Analyze patterns                                │
 │  ├── Generate reflective sections                    │
 │  └── Save report to docs/weekly_reviews/             │
 │                                                      │
-│  WeeklyReviewer.extract_insights()                   │
+│  await WeeklyReviewer.extract_insights()             │
 │  ├── Confidence calibration analysis                 │
 │  ├── Symbol-specific recommendations                 │
 │  ├── SL/TP effectiveness                             │

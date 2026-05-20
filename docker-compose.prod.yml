@@ -22,6 +22,8 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - QUESTDB_HOST=questdb
       - QUESTDB_PORT=9000
+      - QUESTDB_HTTP_ADDR=questdb:9000
+      - DATA_QUESTDB_ADDR=questdb:9000
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
       - POSTGRES_DB=trading_db
@@ -29,8 +31,6 @@ services:
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - GRAFANA_URL=http://grafana:3000
       - LOG_LEVEL=INFO
-    ports:
-      - "8501:8501"   # Streamlit dashboard
     depends_on:
       redis:
         condition: service_healthy
@@ -49,7 +49,7 @@ services:
           cpus: "0.5"
           memory: 512M
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      test: ["CMD", "python", "-c", "import src.main_full"]
       interval: 30s
       timeout: 10s
       retries: 3

@@ -20,11 +20,10 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from loguru import logger
-
 
 # ─── Pattern Data Class ────────────────────────────────────────────────
 
@@ -56,7 +55,7 @@ class PatternNode:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "PatternNode":
+    def from_dict(cls, data: dict[str, Any]) -> PatternNode:
         """Create from dict."""
         return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
 

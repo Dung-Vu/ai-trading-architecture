@@ -3,6 +3,7 @@ Unit tests for RiskEngine module.
 """
 
 import pytest
+
 from src.risk.risk_engine import RiskEngine
 
 
@@ -75,6 +76,37 @@ class TestRiskEngine:
         )
         assert approved is False
         assert "concentration" in reason.lower()
+
+    def test_sell_reducing_position_does_not_increase_exposure(self, engine):
+        positions = {
+            "ETH/USDT": {"market_value": 1900.0},
+        }
+
+        approved, reason = engine.pre_trade_checks(
+            symbol="ETH/USDT",
+            side="sell",
+            quantity=0.2,
+            price=3000.0,
+            current_equity=10000.0,
+            start_equity=10000.0,
+            positions=positions,
+        )
+
+        assert approved is True
+
+    def test_sell_without_position_rejected(self, engine):
+        approved, reason = engine.pre_trade_checks(
+            symbol="ETH/USDT",
+            side="sell",
+            quantity=0.1,
+            price=3000.0,
+            current_equity=10000.0,
+            start_equity=10000.0,
+            positions={},
+        )
+
+        assert approved is False
+        assert "without an existing position" in reason
 
     def test_get_status(self, engine):
         engine.update_peak_equity(10000.0)

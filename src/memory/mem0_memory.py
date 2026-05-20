@@ -18,9 +18,7 @@ Usage:
 from __future__ import annotations
 
 import hashlib
-import json
-import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -95,7 +93,7 @@ class _InMemoryStore:
         for mem in self._memories:
             if mem.get("_id") == memory_id:
                 mem.update(updates)
-                mem["updated_at"] = datetime.now(timezone.utc).isoformat()
+                mem["updated_at"] = datetime.now(UTC).isoformat()
                 return True
         return False
 
@@ -107,7 +105,7 @@ class _InMemoryStore:
 
     def clear_old(self, days: int = 90) -> int:
         """Remove memories older than N days."""
-        cutoff = datetime.now(timezone.utc).timestamp() - days * 86400
+        cutoff = datetime.now(UTC).timestamp() - days * 86400
         original_len = len(self._memories)
         self._memories = [
             m for m in self._memories
@@ -238,7 +236,7 @@ class Mem0Memory:
         Returns:
             Memory ID for future reference/updates.
         """
-        timestamp = trade.get("timestamp", datetime.now(timezone.utc).isoformat())
+        timestamp = trade.get("timestamp", datetime.now(UTC).isoformat())
 
         # Build rich memory text for embedding
         symbol = trade.get("symbol", "UNKNOWN")
@@ -606,7 +604,7 @@ class Mem0Memory:
             "outcome_notes": notes,
             "close_price": trade_outcome.get("close_price"),
             "hold_duration": trade_outcome.get("hold_duration"),
-            "outcome_timestamp": datetime.now(timezone.utc).isoformat(),
+            "outcome_timestamp": datetime.now(UTC).isoformat(),
         }
 
         if self._use_mem0 and self._mem0_client:
@@ -658,7 +656,7 @@ class Mem0Memory:
                 # Mem0 doesn't have a direct bulk-delete-by-date API,
                 # so we search for old memories and delete individually
                 all_results = self._mem0_client.search(query="trade", limit=500)
-                cutoff = datetime.now(timezone.utc).timestamp() - days * 86400
+                cutoff = datetime.now(UTC).timestamp() - days * 86400
 
                 for item in all_results:
                     mem = item.get("metadata", {})

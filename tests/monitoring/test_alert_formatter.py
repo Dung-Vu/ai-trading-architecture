@@ -2,7 +2,6 @@
 Unit tests for AlertFormatter module.
 """
 
-import pytest
 from src.monitoring.alert_formatter import AlertFormatter
 
 

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -112,7 +112,7 @@ class TradingLogger:
                 - strategy (str): Strategy name
                 - mode (str): "dryrun" or "live"
         """
-        ts = trade_data.get("timestamp", datetime.now(timezone.utc).isoformat())
+        ts = trade_data.get("timestamp", datetime.now(UTC).isoformat())
         symbol = trade_data.get("symbol", "?")
         side = trade_data.get("side", "?")
         quantity = trade_data.get("quantity", 0)
@@ -158,7 +158,6 @@ class TradingLogger:
                 - confidence (float): Confidence score 0–1
                 - indicators (dict): Technical indicator values
         """
-        ts = decision_data.get("timestamp", datetime.now(timezone.utc).isoformat())
         symbol = decision_data.get("symbol", "?")
         action = decision_data.get("action", "?")
         reason = decision_data.get("reason", "")

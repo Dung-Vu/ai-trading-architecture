@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 
 from loguru import logger
@@ -65,7 +65,7 @@ class KillSwitch:
         previous = self._state
         record = TriggerRecord(
             reason=reason,
-            timestamp=datetime.now(timezone.utc).isoformat(),
+            timestamp=datetime.now(UTC).isoformat(),
             state_before=previous,
         )
         self._triggers.append(record)

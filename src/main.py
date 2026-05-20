@@ -131,11 +131,11 @@ Examples:
 
 def run_data_pipeline(config):
     """Run the data collection pipeline."""
+    from src.data.binance_connector import BinanceConnector
     from src.data.config import DataConfig as PipelineConfig
     from src.data.quality_gates import QualityGates
     from src.data.questdb_writer import QuestDBWriter
     from src.data.redis_cache import RedisCache
-    from src.data.binance_connector import BinanceConnector
 
     logger.info("🚀 Starting Data Pipeline...")
 
@@ -154,11 +154,10 @@ def run_data_pipeline(config):
 
     # Convert symbols from trading format (BTC/USDT) to cryptofeed format (BTC-USDT)
     cf_symbols = [s.replace("/", "-") for s in config.trading.symbols]
+    pipeline_cfg.symbols = cf_symbols
 
     connector = BinanceConnector(
-        symbols=cf_symbols,
-        channels=pipeline_cfg.channels,
-        candle_interval=pipeline_cfg.candle_interval,
+        config=pipeline_cfg,
         questdb_writer=questdb,
         redis_cache=redis_cache,
         quality_gates=quality_gates,
@@ -168,20 +167,23 @@ def run_data_pipeline(config):
     logger.info("Press Ctrl+C to stop...")
 
     try:
+        questdb.connect()
+        asyncio.run(redis_cache.connect())
         connector.start()
     except KeyboardInterrupt:
         logger.info("🛑 Stopping data pipeline...")
         connector.stop()
     finally:
+        asyncio.run(redis_cache.close())
         questdb.close()
 
 
 def run_backtest(config):
     """Run backtest with the selected strategy."""
-    from src.strategy.sma_cross import SMACrossStrategy
-    from src.strategy.bbands import BBandsStrategy
     from src.strategy.backtest import BacktestRunner
+    from src.strategy.bbands import BBandsStrategy
     from src.strategy.metrics import MetricsCalculator
+    from src.strategy.sma_cross import SMACrossStrategy
 
     logger.info("📈 Starting Backtest...")
 
@@ -248,12 +250,9 @@ def run_backtest(config):
 def run_dry_run(config):
     """Run dry-run trading."""
     from src.execution.dry_run import DryRunExecutor
-    from src.execution.order_manager import OrderManager
-    from src.risk.risk_engine import RiskEngine
-    from src.risk.kill_switch import KillSwitch
     from src.monitoring.trading_logger import TradingLogger
-    from src.strategy.sma_cross import SMACrossStrategy
-    from src.strategy.bbands import BBandsStrategy
+    from src.risk.kill_switch import KillSwitch
+    from src.risk.risk_engine import RiskEngine
 
     logger.info("🤖 Starting Dry-Run Trading...")
     logger.info(f"💰 Initial capital: ${config.trading.initial_capital:,.2f}")
@@ -269,6 +268,10 @@ def run_dry_run(config):
         max_drawdown_pct=config.risk.max_drawdown_pct / 100,
         max_position_pct=config.risk.max_position_pct / 100,
         max_leverage=config.risk.max_leverage,
+    )
+    risk_engine.update_peak_equity(config.trading.initial_capital)
+    logger.debug(
+        f"RiskEngine initialized with drawdown={risk_engine.get_status().current_drawdown_pct:.2%}"
     )
 
     kill_switch = KillSwitch()
@@ -319,6 +322,25 @@ def run_monitor(config):
     bot.start_polling()
 
 
+def run_unified_bot(config, args) -> None:
+    """Run the production unified bot for exchange-backed modes."""
+    from src.main_full import FullTradingBot
+
+    bot = FullTradingBot(
+        config=config,
+        mode=config.trading.mode,
+        strategy=config.strategy.name,
+        symbols=config.trading.symbols,
+        interval=getattr(args, "interval", 60),
+    )
+
+    async def _run() -> None:
+        await bot.setup()
+        await bot.run()
+
+    asyncio.run(_run())
+
+
 def main():
     args = parse_args()
 
@@ -358,13 +380,12 @@ def main():
     elif config.trading.mode == "dryrun":
         run_dry_run(config)
     elif config.trading.mode == "testnet":
-        # Testnet uses similar logic but with real CCXT connection
         logger.info("🔗 Connecting to Binance Testnet...")
-        run_dry_run(config)  # TODO: wire up real testnet execution
+        run_unified_bot(config, args)
     elif config.trading.mode == "live":
         logger.warning("⚠️ LIVE trading mode — use at your own risk!")
         logger.warning("⚠️ Ensure Risk Engine and Kill Switch are configured!")
-        run_dry_run(config)  # TODO: wire up real live execution
+        run_unified_bot(config, args)
 
 
 if __name__ == "__main__":

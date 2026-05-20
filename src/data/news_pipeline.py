@@ -22,12 +22,10 @@ Usage:
 
 from __future__ import annotations
 
-import hashlib
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
-from urllib.parse import urlparse
 
 from loguru import logger
 
@@ -374,10 +372,7 @@ class NewsPipeline:
 
         # Calculate overall score
         total = len(news_items)
-        if total > 0:
-            overall_score = (positive_count - negative_count) / total
-        else:
-            overall_score = 0.0
+        overall_score = (positive_count - negative_count) / total if total > 0 else 0.0
 
         # Clamp to [-1, 1]
         overall_score = max(-1.0, min(1.0, overall_score))
@@ -439,10 +434,11 @@ class NewsPipeline:
 
         # Calculate aggregate
         total_news = total_positive + total_negative + total_neutral
-        if total_news > 0:
-            aggregate = (total_positive - total_negative) / total_news
-        else:
-            aggregate = 0.0
+        aggregate = (
+            (total_positive - total_negative) / total_news
+            if total_news > 0
+            else 0.0
+        )
 
         result["aggregate"] = round(aggregate, 4)
         result["overall_positive"] = total_positive
@@ -549,7 +545,6 @@ class NewsPipeline:
             return 0.0
 
         # Tokenize
-        import re
         words = set(re.findall(r'\b\w+\b', text.lower()))
 
         positive_hits = words & {k.lower() for k in POSITIVE_KEYWORDS}
@@ -571,7 +566,6 @@ class NewsPipeline:
 
     def _extract_topics(self, text: str) -> set[str]:
         """Extract notable topics from text."""
-        import re
         words = set(re.findall(r'\b\w+\b', text.lower()))
         return words & {k.lower() for k in NOTABLE_KEYWORDS}
 

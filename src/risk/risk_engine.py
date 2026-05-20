@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from dataclasses import dataclass
+from datetime import UTC, date, datetime
 
 from loguru import logger
 
@@ -53,14 +53,16 @@ class RiskEngine:
         self._daily_pnl: float = 0.0
         self._start_equity: float = 0.0
         self._peak_equity: float = 0.0
-        self._last_reset_date: date = datetime.now(timezone.utc).date()
+        self._current_equity: float = 0.0
+        self._last_reset_date: date = datetime.now(UTC).date()
 
     def _reset_if_new_day(self) -> None:
         """Reset daily P&L if we've crossed a day boundary."""
-        today = datetime.now(timezone.utc).date()
+        today = datetime.now(UTC).date()
         if today > self._last_reset_date:
             logger.info(f"New trading day detected ({today}), resetting daily P&L")
             self._daily_pnl = 0.0
+            self._start_equity = 0.0
             self._last_reset_date = today
 
     def pre_trade_checks(
@@ -87,7 +89,12 @@ class RiskEngine:
         Returns:
             Tuple of (approved, reason). approved=True means trade passes.
         """
+        self._current_equity = current_equity
+        if self._start_equity <= 0.0 and start_equity > 0:
+            self._start_equity = start_equity
+
         self._reset_if_new_day()
+        self.update_peak_equity(current_equity)
 
         trade_value = quantity * price
 
@@ -114,14 +121,30 @@ class RiskEngine:
                 logger.warning(f"[RISK] Trade rejected for {symbol}: {reason}")
                 return False, reason
 
+        side_norm = side.lower()
+        existing_value = 0.0
+        if symbol in positions:
+            existing_value = float(positions[symbol].get("market_value", 0.0))
+
+        if side_norm == "sell" and existing_value <= 0:
+            reason = f"Cannot sell {symbol} without an existing position"
+            logger.warning(f"[RISK] Trade rejected for {symbol}: {reason}")
+            return False, reason
+
+        if side_norm == "buy":
+            proposed_symbol_exposure = existing_value + trade_value
+            total_exposure_delta = trade_value
+        elif side_norm == "sell":
+            proposed_symbol_exposure = max(existing_value - trade_value, 0.0)
+            total_exposure_delta = -min(trade_value, existing_value)
+        else:
+            reason = f"Unsupported trade side: {side}"
+            logger.warning(f"[RISK] Trade rejected for {symbol}: {reason}")
+            return False, reason
+
         # Check 3: Position concentration
         if current_equity > 0:
-            # Include existing position value for this symbol
-            existing_value = 0.0
-            if symbol in positions:
-                existing_value = positions[symbol].get("market_value", 0.0)
-            total_exposure = existing_value + trade_value
-            concentration = total_exposure / current_equity
+            concentration = proposed_symbol_exposure / current_equity
             if concentration >= self.max_position_pct:
                 reason = (
                     f"Position concentration exceeded: {concentration:.2%} >= "
@@ -133,8 +156,9 @@ class RiskEngine:
         # Check 4: Leverage (simplified: total exposure / equity)
         if current_equity > 0:
             total_exposure_all = sum(
-                p.get("market_value", 0.0) for p in positions.values()
-            ) + trade_value
+                float(p.get("market_value", 0.0)) for p in positions.values()
+            ) + total_exposure_delta
+            total_exposure_all = max(total_exposure_all, 0.0)
             effective_leverage = total_exposure_all / current_equity
             if effective_leverage >= self.max_leverage:
                 reason = (
@@ -163,6 +187,9 @@ class RiskEngine:
         Args:
             equity: Current equity value.
         """
+        self._current_equity = equity
+        if self._start_equity <= 0.0:
+            self._start_equity = equity
         if equity > self._peak_equity:
             self._peak_equity = equity
             logger.debug(f"New peak equity recorded: {self._peak_equity:.2f}")
@@ -173,15 +200,18 @@ class RiskEngine:
             f"Daily reset: previous P&L was {self._daily_pnl:.2f}"
         )
         self._daily_pnl = 0.0
-        self._last_reset_date = datetime.now(timezone.utc).date()
+        self._start_equity = self._current_equity
+        self._last_reset_date = datetime.now(UTC).date()
 
-    def get_status(self) -> RiskStatus:
+    def get_status(self, current_equity: float | None = None) -> RiskStatus:
         """Get current risk status.
 
         Returns:
             RiskStatus dataclass with current metrics.
         """
         self._reset_if_new_day()
+
+        cur_equity = current_equity if current_equity is not None else self._current_equity
 
         daily_pnl_pct = (
             self._daily_pnl / self._start_equity
@@ -190,8 +220,8 @@ class RiskEngine:
         )
 
         drawdown = (
-            (self._peak_equity - self._peak_equity) / self._peak_equity
-            if self._peak_equity > 0
+            (self._peak_equity - cur_equity) / self._peak_equity
+            if self._peak_equity > 0 and cur_equity > 0
             else 0.0
         )
 
@@ -201,11 +231,17 @@ class RiskEngine:
             and abs(self._daily_pnl) / self._start_equity >= self.max_daily_loss_pct
         )
 
+        drawdown_exceeded = (
+            self._peak_equity > 0
+            and cur_equity > 0
+            and drawdown >= self.max_drawdown_pct
+        )
+
         return RiskStatus(
             daily_pnl=self._daily_pnl,
             daily_pnl_pct=daily_pnl_pct,
             peak_equity=self._peak_equity,
             current_drawdown_pct=drawdown,
             daily_loss_limit_exceeded=daily_exceeded,
-            drawdown_limit_exceeded=False,  # Requires current equity
+            drawdown_limit_exceeded=drawdown_exceeded,
         )
