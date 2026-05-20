@@ -188,3 +188,18 @@ class BBandsStrategy(BaseStrategy):
                     pnl_pct,
                 )
                 self.vars.entry_price = None
+
+    def generate_signal(
+        self, price: float, indicators: dict, market_data: dict
+    ) -> str:
+        """Generate Bollinger Bands signal (BUY, SELL, or HOLD)."""
+        bb_upper = indicators.get("bb_upper", price * 1.02)
+        bb_lower = indicators.get("bb_lower", price * 0.98)
+        volume_high = indicators.get("volume_high", False)
+
+        if price <= bb_lower and volume_high:
+            return "BUY"
+        elif price >= bb_upper:
+            return "SELL"
+
+        return "HOLD"

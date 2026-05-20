@@ -242,6 +242,11 @@ class MetricsCalculator:
         returns = equity_curve.pct_change().dropna() if not equity_curve.empty else pd.Series()
 
         pnls = [t.get("pnl", 0) for t in trades]
+        start_val = float(equity_curve.iloc[0]) if not equity_curve.empty else 0.0
+        end_val = float(equity_curve.iloc[-1]) if not equity_curve.empty else 0.0
+        total_return_pct = ((end_val - start_val) / start_val * 100) if start_val > 0 else 0.0
+        max_dd = MetricsCalculator.calc_max_drawdown(equity_curve)
+        win_rate = MetricsCalculator.calc_win_rate(trades)
 
         return {
             "sharpe_ratio": MetricsCalculator.calc_sharpe_ratio(
@@ -250,15 +255,18 @@ class MetricsCalculator:
             "sortino_ratio": MetricsCalculator.calc_sortino_ratio(
                 returns, risk_free_rate
             ),
-            "max_drawdown": MetricsCalculator.calc_max_drawdown(equity_curve),
-            "win_rate": MetricsCalculator.calc_win_rate(trades),
+            "max_drawdown": max_dd,
+            "max_drawdown_pct": max_dd * 100,
+            "win_rate": win_rate,
+            "win_rate_pct": win_rate * 100,
             "profit_factor": MetricsCalculator.calc_profit_factor(trades),
             "expectancy": MetricsCalculator.calc_expectancy(trades),
             "total_trades": len(trades),
             "avg_pnl": float(np.mean(pnls)) if pnls else 0.0,
             "total_pnl": float(sum(pnls)),
-            "start_value": float(equity_curve.iloc[0]) if not equity_curve.empty else 0.0,
-            "end_value": float(equity_curve.iloc[-1]) if not equity_curve.empty else 0.0,
+            "start_value": start_val,
+            "end_value": end_val,
+            "total_return_pct": total_return_pct,
         }
 
     # ------------------------------------------------------------------ #

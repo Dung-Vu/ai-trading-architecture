@@ -9,6 +9,36 @@ from lumibot.entities import Asset, Order
 from lumibot.strategies import Strategy
 
 
+class MockFilledPositions(list):
+    def get_list(self):
+        return self
+
+
+class MockDataSource:
+    SOURCE = "MOCK"
+    def __init__(self):
+        self.datetime_start = None
+        self.datetime_end = None
+        self._data_store = {}
+
+    def get_datetime(self):
+        from datetime import datetime
+        return datetime.utcnow()
+
+
+class MockBroker:
+    IS_BACKTESTING_BROKER = True
+    def __init__(self):
+        self.name = "mock"
+        self.data_source = MockDataSource()
+        self._filled_positions = MockFilledPositions()
+        self.quote_assets = set()
+        self.market = "24/7"
+
+    def _add_subscriber(self, subscriber):
+        pass
+
+
 class BaseStrategy(Strategy):
     """Abstract base class for all trading strategies.
 
@@ -29,9 +59,31 @@ class BaseStrategy(Strategy):
         "max_drawdown": 0.15,
     }
 
-    # ------------------------------------------------------------------ #
-    #  Lifecycle
-    # ------------------------------------------------------------------ #
+    def __init__(self, *args, **kwargs) -> None:
+        """Initialize the strategy and bypass broker checks if running out of Lumibot loop."""
+        import os
+
+        # Use MockBroker if no broker is provided to avoid raising ValueError inside Lumibot
+        if "broker" not in kwargs or kwargs["broker"] is None:
+            kwargs["broker"] = MockBroker()
+        if "data_source" not in kwargs or kwargs["data_source"] is None:
+            kwargs["data_source"] = kwargs["broker"].data_source
+
+        prev_is_backtesting = os.environ.get("IS_BACKTESTING")
+        os.environ["IS_BACKTESTING"] = "true"
+        try:
+            super().__init__(*args, **kwargs)
+        finally:
+            if prev_is_backtesting is not None:
+                os.environ["IS_BACKTESTING"] = prev_is_backtesting
+            else:
+                os.environ.pop("IS_BACKTESTING", None)
+
+    def generate_signal(
+        self, price: float, indicators: dict, market_data: dict
+    ) -> str:
+        """Stub for manual signal generation outside the Lumibot lifecycle."""
+        return "HOLD"
 
     def initialize(self) -> None:
         """Set up the strategy for crypto (24/7) markets and initialise state.

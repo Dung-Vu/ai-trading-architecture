@@ -69,3 +69,7 @@ ta-lib/
 *.tar.gz
 *.zip
 *.rar
+
+# Runtime and state files
+config/bot_state.json
+

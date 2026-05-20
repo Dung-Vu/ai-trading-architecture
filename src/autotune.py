@@ -88,7 +88,7 @@ class AutoTuner:
 
     # ─── Weekly Optimization Cycle ─────────────────────────────────────
 
-    def weekly_optimization_cycle(self) -> dict[str, Any]:
+    async def weekly_optimization_cycle(self) -> dict[str, Any]:
         """
         Run the full weekly optimization cycle.
 
@@ -112,7 +112,7 @@ class AutoTuner:
 
         # Step 1: Fetch last week's trades
         logger.info("  Step 1: Fetching last week's trades...")
-        trades = self._fetch_recent_trades(days=7)
+        trades = await self._fetch_recent_trades(days=7)
         report["trades_analyzed"] = len(trades)
         report["steps_completed"].append("fetch_trades")
 
@@ -176,7 +176,7 @@ class AutoTuner:
 
     # ─── Strategy Decay Detection ──────────────────────────────────────
 
-    def detect_strategy_decay(self) -> bool:
+    async def detect_strategy_decay(self) -> bool:
         """
         Detect if strategy performance is degrading.
 
@@ -187,7 +187,7 @@ class AutoTuner:
             True if optimization is needed (performance degraded).
         """
         # Fetch recent trades
-        recent_trades = self._fetch_recent_trades(days=30)
+        recent_trades = await self._fetch_recent_trades(days=30)
         if len(recent_trades) < 10:
             logger.debug("Not enough trades for decay detection")
             return False
@@ -235,7 +235,7 @@ class AutoTuner:
 
     # ─── Optimization Recommendations ──────────────────────────────────
 
-    def get_optimization_recommendations(self) -> list[str]:
+    async def get_optimization_recommendations(self) -> list[str]:
         """
         Suggest parameter changes based on recent performance.
 
@@ -247,7 +247,7 @@ class AutoTuner:
             List of recommendation strings.
         """
         recommendations: list[str] = []
-        trades = self._fetch_recent_trades(days=30)
+        trades = await self._fetch_recent_trades(days=30)
 
         if len(trades) < 5:
             return ["Insufficient trade data for recommendations (need 5+)"]
@@ -348,7 +348,7 @@ class AutoTuner:
 
     # ─── Internal Methods ──────────────────────────────────────────────
 
-    def _fetch_recent_trades(self, days: int = 7) -> list[dict[str, Any]]:
+    async def _fetch_recent_trades(self, days: int = 7) -> list[dict[str, Any]]:
         """Fetch trades from memory for the last N days."""
         if self.trade_memory is None:
             logger.warning("No trade memory available for optimization")
@@ -361,32 +361,16 @@ class AutoTuner:
                 start_date = end_date - timedelta(days=days)
 
                 # Check if async
-                if hasattr(self.trade_memory, "get_trade_history"):
-                    # For sync access, try to get trades directly
-                    import asyncio
-                    try:
-                        loop = asyncio.get_event_loop()
-                        if loop.is_running():
-                            # We're in an async context — can't use await directly
-                            # Return empty list and log warning
-                            logger.warning(
-                                "Cannot fetch trades from async context in AutoTuner"
-                            )
-                            return []
-                        trades = loop.run_until_complete(
-                            self.trade_memory.get_trade_history(
-                                limit=500, start_date=start_date, end_date=end_date
-                            )
-                        )
-                        return trades
-                    except RuntimeError:
-                        # No running event loop — we can create one
-                        trades = asyncio.run(
-                            self.trade_memory.get_trade_history(
-                                limit=500, start_date=start_date, end_date=end_date
-                            )
-                        )
-                        return trades
+                import inspect
+                if inspect.iscoroutinefunction(self.trade_memory.get_trade_history):
+                    trades = await self.trade_memory.get_trade_history(
+                        limit=500, start_date=start_date, end_date=end_date
+                    )
+                else:
+                    trades = self.trade_memory.get_trade_history(
+                        limit=500, start_date=start_date, end_date=end_date
+                    )
+                return trades
         except Exception as exc:
             logger.warning(f"Failed to fetch trades from memory: {exc}")
 
@@ -500,8 +484,8 @@ class AutoTuner:
         """
         Run parameter optimization.
 
-        Uses a simple grid search over parameter ranges, evaluating
-        each combination against historical trade data.
+        Integrates Lumibot's BacktestRunner for high-fidelity backtests
+        with heuristic fallbacks if real backtesting fails or is unavailable.
 
         Returns:
             Optimization result with new recommended parameters.
@@ -519,14 +503,78 @@ class AutoTuner:
             {"sma_fast": 15, "sma_slow": 50, "rsi_oversold": 35, "rsi_overbought": 70},
         ]
 
-        for combo in param_combos:
-            # Simulate score for this parameter set
-            # In production, this would re-run the strategy with these params
-            simulated_score = self._simulate_params(trades, combo)
+        # Extract symbol
+        symbol = "BTC"
+        if trades:
+            symbols = [t.get("symbol", "BTC/USDT") for t in trades]
+            most_common = max(set(symbols), key=symbols.count)
+            if "/" in most_common:
+                symbol = most_common.split("/")[0]
+            else:
+                symbol = most_common
 
-            if simulated_score > best_score:
-                best_score = simulated_score
-                best_params = combo
+        # Check if strategy class is available
+        strategy_class = getattr(self, "strategy_class", None)
+        if not strategy_class:
+            if self.strategy_name.lower() in ["sma_cross", "smacross"]:
+                try:
+                    from src.strategy.sma_cross import SMACrossStrategy
+                    strategy_class = SMACrossStrategy
+                except ImportError:
+                    pass
+            elif self.strategy_name.lower() in ["bbands", "bbands_strategy"]:
+                try:
+                    from src.strategy.bbands import BBandsStrategy
+                    strategy_class = BBandsStrategy
+                except ImportError:
+                    pass
+
+        # Try to run BacktestRunner for real backtesting
+        backtest_successful = False
+        if strategy_class:
+            try:
+                from src.strategy.backtest import BacktestRunner
+                # We will backtest over the last 90 days for better statistics
+                end_date = datetime.now(timezone.utc)
+                start_date = end_date - timedelta(days=90)
+
+                logger.info(f"📊 Attempting real Lumibot backtest optimization for {symbol} (90-day window)...")
+
+                for combo in param_combos:
+                    # In backtest parameters, symbol and quote are managed by runner
+                    runner = BacktestRunner(
+                        strategy_class=strategy_class,
+                        symbol=symbol,
+                        start_date=start_date,
+                        end_date=end_date,
+                        parameters=combo,
+                    )
+                    runner.run()
+                    results = runner.get_results()
+                    simulated_score = results.get("sharpe_ratio", 0)
+                    if simulated_score is None:
+                        simulated_score = 0.0
+
+                    if simulated_score > best_score:
+                        best_score = simulated_score
+                        best_params = combo
+
+                backtest_successful = True
+                logger.info("✅ Lumibot backtest optimization completed successfully.")
+            except Exception as e:
+                logger.warning(
+                    f"⚠️ Real backtest failed due to error: {e}. "
+                    "Falling back to heuristic _simulate_params estimator."
+                )
+
+        # Fallback to heuristic estimator if real backtest failed or was unavailable
+        if not backtest_successful:
+            logger.info("🧮 Running heuristic optimization estimator...")
+            for combo in param_combos:
+                simulated_score = self._simulate_params(trades, combo)
+                if simulated_score > best_score:
+                    best_score = simulated_score
+                    best_params = combo
 
         return {
             "new_params": best_params,

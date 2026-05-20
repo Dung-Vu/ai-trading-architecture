@@ -33,7 +33,7 @@ class TestAlertFormatter:
             total_value=10245.50,
             win_rate=62.5,
         )
-        assert "dryrun" in msg
+        assert "dryrun" in msg.lower()
         assert "10,245" in msg
         assert "125.30" in msg
         assert "62.5" in msg

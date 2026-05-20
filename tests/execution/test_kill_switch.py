@@ -23,13 +23,13 @@ class TestKillSwitch:
     def test_disarm(self):
         ks = KillSwitch()
         ks.trigger("Test trigger")
-        ks.disarm()
+        ks.disarm("DISARM")
         assert ks.is_active() is False
 
     def test_trigger_history(self):
         ks = KillSwitch()
         ks.trigger("Trigger 1")
-        ks.disarm()
+        ks.disarm("DISARM")
         ks.trigger("Trigger 2")
 
         history = ks.get_trigger_history()
@@ -39,10 +39,12 @@ class TestKillSwitch:
 
     def test_auto_check_triggered(self):
         ks = KillSwitch()
-        ks.auto_check(max_drawdown_pct=10.0, current_drawdown=11.0)
+        ks.arm()
+        ks.auto_check(max_drawdown_pct=0.10, current_drawdown=0.11)
         assert ks.is_active() is True
 
     def test_auto_check_not_triggered(self):
         ks = KillSwitch()
-        ks.auto_check(max_drawdown_pct=10.0, current_drawdown=5.0)
+        ks.arm()
+        ks.auto_check(max_drawdown_pct=0.10, current_drawdown=0.05)
         assert ks.is_active() is False

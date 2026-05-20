@@ -52,9 +52,34 @@ class AlertFormatter:
         return msg
 
     @staticmethod
+    def _normalize_positions(positions: Any) -> list[dict[str, Any]]:
+        """Normalize both list and dict representations of positions into list of dicts."""
+        if not positions:
+            return []
+        normalized = []
+        if isinstance(positions, dict):
+            for sym, pos_data in positions.items():
+                if isinstance(pos_data, dict):
+                    # For format: { "BTC/USDT": { "quantity": 0.01, "value": 500 } }
+                    pos_dict = {"symbol": sym}
+                    for k, v in pos_data.items():
+                        pos_dict[k] = v
+                    normalized.append(pos_dict)
+                else:
+                    # For format: { "BTC/USDT": 5000 }
+                    normalized.append({"symbol": sym, "value": pos_data, "entry_price": pos_data})
+        elif isinstance(positions, list):
+            for p in positions:
+                if isinstance(p, dict):
+                    normalized.append(p)
+                elif isinstance(p, str):
+                    normalized.append({"symbol": p})
+        return normalized
+
+    @staticmethod
     def format_status(
         mode: str,
-        positions: list[dict[str, Any]],
+        positions: list[dict[str, Any]] | dict[str, Any],
         daily_pnl: float,
         total_value: float,
         win_rate: float,
@@ -65,8 +90,8 @@ class AlertFormatter:
         ----------
         mode : str
             "dryrun" | "live"
-        positions : list[dict]
-            Each dict: {symbol, side, quantity, entry_price, pnl}
+        positions : list[dict] | dict
+            Each dict or value: {symbol, side, quantity, entry_price, pnl}
         daily_pnl : float
             Today's P&L
         total_value : float
@@ -84,9 +109,10 @@ class AlertFormatter:
             f"<b>Win Rate:</b> <code>{win_rate:.1f}%</code>"
         )
 
-        if positions:
-            msg += f"\n\n<b>Open Positions ({len(positions)})</b>"
-            for pos in positions:
+        positions_list = AlertFormatter._normalize_positions(positions)
+        if positions_list:
+            msg += f"\n\n<b>Open Positions ({len(positions_list)})</b>"
+            for pos in positions_list:
                 pnl = pos.get("pnl", 0.0)
                 pnl_emoji = "🟢" if pnl >= 0 else "🔴"
                 msg += (
@@ -108,7 +134,7 @@ class AlertFormatter:
         total_trades: int,
         sharpe: float | None = None,
         max_dd: float | None = None,
-        positions: list[dict[str, Any]] | None = None,
+        positions: list[dict[str, Any]] | dict[str, Any] | None = None,
     ) -> str:
         """Return an HTML-formatted daily performance report.
 
@@ -126,7 +152,7 @@ class AlertFormatter:
             Sharpe ratio
         max_dd : float | None
             Maximum drawdown percentage
-        positions : list[dict] | None
+        positions : list[dict] | dict | None
             Currently open positions
         """
         pnl_emoji = "🟢" if total_pnl >= 0 else "🔴"
@@ -144,9 +170,10 @@ class AlertFormatter:
             dd_color = "🔴" if max_dd > 5 else "🟡"
             msg += f"\n{dd_color} <b>Max Drawdown:</b> <code>{max_dd:.2f}%</code>"
 
-        if positions:
-            msg += f"\n\n<b>Open Positions ({len(positions)})</b>"
-            for pos in positions:
+        positions_list = AlertFormatter._normalize_positions(positions)
+        if positions_list:
+            msg += f"\n\n<b>Open Positions ({len(positions_list)})</b>"
+            for pos in positions_list:
                 pnl = pos.get("pnl", 0.0)
                 pnl_emoji = "🟢" if pnl >= 0 else "🔴"
                 msg += (

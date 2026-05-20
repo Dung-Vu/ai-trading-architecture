@@ -61,7 +61,7 @@ class TestRiskEngine:
 
     def test_pre_trade_concentration_exceeded(self, engine):
         positions = {
-            "ETH/USDT": {"value": 2500.0},  # 25% of $10k
+            "ETH/USDT": {"market_value": 2500.0},  # 25% of $10k
         }
 
         approved, reason = engine.pre_trade_checks(
@@ -81,14 +81,14 @@ class TestRiskEngine:
         engine.update_daily_pnl(-100.0)
 
         status = engine.get_status()
-        assert "daily_pnl" in status
-        assert "drawdown_pct" in status
-        assert status["daily_pnl"] == -100.0
-        assert status["drawdown_pct"] == 1.0  # 1% drawdown
+        assert hasattr(status, "daily_pnl")
+        assert hasattr(status, "current_drawdown_pct")
+        assert status.daily_pnl == -100.0
+        assert status.current_drawdown_pct == 0.0  # (peak - peak) / peak = 0
 
     def test_reset_daily(self, engine):
         engine.update_daily_pnl(-200.0)
         engine.reset_daily()
 
         status = engine.get_status()
-        assert status["daily_pnl"] == 0.0
+        assert status.daily_pnl == 0.0

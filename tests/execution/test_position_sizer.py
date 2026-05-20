@@ -15,7 +15,7 @@ class TestPositionSizer:
         """Half-Kelly for a strategy with 60% win rate, 3% avg win, 2% avg loss."""
         size = sizer.calc_half_kelly(win_rate=0.60, avg_win=0.03, avg_loss=0.02, equity=10000)
         assert size > 0
-        assert size <= 1.0  # Should never exceed 100% of equity
+        assert size <= 10000.0  # Should never exceed 100% of equity
 
     def test_half_kelly_unprofitable(self, sizer):
         """Half-Kelly for a losing strategy should return 0."""
@@ -40,10 +40,10 @@ class TestPositionSizer:
             avg_win=0.03,
             avg_loss=0.02,
         )
-        assert "size_quote" in result
-        assert "size_base" in result
-        assert "method_used" in result
-        assert result["size_quote"] > 0
+        assert hasattr(result, "size_quote")
+        assert hasattr(result, "size_base")
+        assert hasattr(result, "method_used")
+        assert result.size_quote > 0
 
     def test_check_daily_loss_pass(self, sizer):
         assert sizer.check_daily_loss(

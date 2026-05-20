@@ -182,3 +182,37 @@ class SMACrossStrategy(BaseStrategy):
                 "SELL signal: {} (RSI={:.1f})", reason, rsi
             )
             self.vars.entry_price = None
+
+    def generate_signal(
+        self, price: float, indicators: dict, market_data: dict
+    ) -> str:
+        """Generate dual SMA crossover strategy with RSI filter signal."""
+        rsi = indicators.get("rsi")
+        sma_fast = indicators.get("sma_fast")
+        sma_slow = indicators.get("sma_slow")
+
+        if rsi is None or sma_fast is None or sma_slow is None:
+            return "HOLD"
+
+        # Crossover logic needs history
+        prev_fast = getattr(self, "_prev_sma_fast", None)
+        prev_slow = getattr(self, "_prev_sma_slow", None)
+
+        self._prev_sma_fast = sma_fast
+        self._prev_sma_slow = sma_slow
+
+        if prev_fast is None or prev_slow is None:
+            return "HOLD"
+
+        bullish_cross = (prev_fast <= prev_slow) and (sma_fast > sma_slow)
+        bearish_cross = (prev_fast >= prev_slow) and (sma_fast < sma_slow)
+        
+        rsi_overbought = rsi > self.parameters.get("rsi_overbought", 70)
+        rsi_safe = rsi < self.parameters.get("rsi_overbought", 70)
+
+        if bullish_cross and rsi_safe:
+            return "BUY"
+        elif bearish_cross or rsi_overbought:
+            return "SELL"
+
+        return "HOLD"

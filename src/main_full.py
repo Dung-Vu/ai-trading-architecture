@@ -23,6 +23,9 @@ Usage:
 
 from __future__ import annotations
 
+import os
+os.environ["IS_BACKTESTING"] = "true"
+
 import argparse
 import asyncio
 import json
@@ -231,6 +234,7 @@ class FullTradingBot:
         self._risk_engine: Any = None            # Risk management
         self._kill_switch: Any = None            # Kill switch
         self._executor: Any = None               # Trade executor
+        self._order_manager: Any = None          # Order manager
         self._news_pipeline: Any = None          # News + sentiment
         self._auto_tuner: Any = None             # Auto-optimizer
         self._telegram_bot: Any = None           # Telegram alerts
@@ -245,6 +249,7 @@ class FullTradingBot:
         self._last_autotune: datetime | None = None
         self._last_memory_cleanup: datetime | None = None
         self._positions: dict[str, dict[str, Any]] = {}  # symbol → position info
+        self._pending_sl_tp: list[dict[str, Any]] = []    # pending stop-loss / take-profit orders
         self._portfolio = {
             "cash": config.trading.initial_capital,
             "total_value": config.trading.initial_capital,
@@ -255,7 +260,7 @@ class FullTradingBot:
         # Register signal handlers
         self._register_signal_handlers()
 
-        logger.info(f"🤖 FullTradingBot created (mode={mode}, strategy={strategy_name})")
+        logger.info(f"🤖 FullTradingBot created (mode={mode}, strategy={strategy})")
 
     def _register_signal_handlers(self) -> None:
         """Register OS signal handlers for graceful shutdown."""
@@ -382,15 +387,35 @@ class FullTradingBot:
         """Initialize trade executor."""
         from src.execution.dry_run import DryRunExecutor
         from src.execution.order_manager import OrderManager
+        from src.execution.exchange_client import ExchangeClient
 
         self._executor = DryRunExecutor(
             initial_balance=self.config.trading.initial_capital
         )
-        self._order_manager = OrderManager()
+        
+        if self.mode == "dryrun":
+            self._order_manager = OrderManager(None, dry_run=True)
+        else:
+            api_key = self.config.binance_testnet_api_key if self.mode == "testnet" else self.config.binance_api_key
+            api_secret = self.config.binance_testnet_api_secret if self.mode == "testnet" else self.config.binance_api_secret
+            
+            exchange_client = ExchangeClient(
+                api_key=api_key,
+                api_secret=api_secret,
+                testnet=(self.mode == "testnet"),
+            )
+            try:
+                exchange_client.connect()
+            except Exception as e:
+                logger.error(f"Failed to connect exchange client for {self.mode}: {e}")
+            self._order_manager = OrderManager(exchange_client, dry_run=False)
+
         logger.info(f"✅ {self.mode} executor initialized (${self.config.trading.initial_capital:,.2f})")
 
     def _setup_strategies(self) -> None:
         """Initialize trading strategies."""
+        import os
+        os.environ["IS_BACKTESTING"] = "true"
         from src.strategy.sma_cross import SMACrossStrategy
         from src.strategy.bbands import BBandsStrategy
 
@@ -689,20 +714,126 @@ class FullTradingBot:
         current_price = market_data.get("price", 0)
         indicators = market_data.get("indicators", {})
 
+        # Step 1.5: Evaluate Stop-Loss and Take-Profit bounds
+        if self._pending_sl_tp:
+            # Filter orders belonging to this symbol
+            symbol_orders = [o for o in self._pending_sl_tp if o["symbol"] == symbol]
+            if symbol_orders:
+                if self.mode == "dryrun" and self._executor:
+                    try:
+                        triggered = self._executor.simulate_sl_tp(
+                            symbol_orders, {symbol: current_price}
+                        )
+                        if triggered:
+                            for trg in triggered:
+                                trg_type = trg.get("triggered_by", "sl/tp")
+                                logger.info(
+                                    f"🚨 [{symbol}] {trg_type.upper()} triggered! "
+                                    f"Closed position @ {current_price}"
+                                )
+                                # Remove position
+                                if symbol in self._positions:
+                                    del self._positions[symbol]
+                                # Clean up all SL/TP orders for this symbol
+                                self._pending_sl_tp = [
+                                    o for o in self._pending_sl_tp if o["symbol"] != symbol
+                                ]
+                                # Send Telegram alert
+                                await self._send_alert(symbol, trg, {"action": "SELL", "confidence": 100, "rounds": 0})
+                    except Exception as e:
+                        logger.error(f"Error evaluating dry-run SL/TP for {symbol}: {e}")
+                else:
+                    # Live / testnet mode: manual price-crossing check and CCXT execution
+                    triggered_orders = []
+                    for order in symbol_orders:
+                        stop_price = order["stop_price"]
+                        direction = order.get("direction", "")
+                        triggered_price = False
+                        if direction == "below" and current_price <= stop_price:
+                            triggered_price = True
+                        elif direction == "above" and current_price >= stop_price:
+                            triggered_price = True
+
+                        if triggered_price:
+                            triggered_orders.append(order)
+
+                    if triggered_orders:
+                        for trg_order in triggered_orders:
+                            logger.info(f"🚨 [LIVE] {trg_order['type'].upper()} trigger price reached: ${current_price:.2f} (stop was ${trg_order['stop_price']:.2f})")
+                            try:
+                                side_to_execute = trg_order["side"]
+                                amount_to_execute = trg_order["quantity"]
+                                portfolio = await self._get_portfolio_state()
+                                
+                                logger.info(f"🚨 Sending real market {side_to_execute.upper()} SL/TP close order to exchange for {symbol}...")
+                                loop = asyncio.get_event_loop()
+                                order = await loop.run_in_executor(
+                                    None,
+                                    lambda: self._order_manager.create_market_order(
+                                        symbol=symbol,
+                                        side=side_to_execute,
+                                        amount=amount_to_execute
+                                    )
+                                )
+                                
+                                avg_fill_price = float(order.get("average", current_price) or current_price)
+                                filled_qty = float(order.get("filled", amount_to_execute))
+                                
+                                pnl = 0.0
+                                pnl_pct = 0.0
+                                if symbol in self._positions:
+                                    entry_price = self._positions[symbol]["entry_price"]
+                                    if side_to_execute == "sell":
+                                        pnl = (avg_fill_price - entry_price) * filled_qty
+                                        pnl_pct = ((avg_fill_price - entry_price) / entry_price * 100) if entry_price > 0 else 0.0
+                                    else:
+                                        pnl = (entry_price - avg_fill_price) * filled_qty
+                                        pnl_pct = ((entry_price - avg_fill_price) / entry_price * 100) if entry_price > 0 else 0.0
+                                
+                                trg_result = {
+                                    "trade_id": order.get("id"),
+                                    "symbol": symbol,
+                                    "side": side_to_execute,
+                                    "quantity": filled_qty,
+                                    "price": avg_fill_price,
+                                    "revenue": filled_qty * avg_fill_price,
+                                    "pnl": pnl,
+                                    "pnl_pct": pnl_pct,
+                                    "cash_total": portfolio["cash"] + (filled_qty * avg_fill_price if side_to_execute == "sell" else -filled_qty * avg_fill_price),
+                                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                                    "triggered_by": trg_order.get("type"),
+                                    "order_info": order,
+                                }
+                                
+                                if symbol in self._positions:
+                                    del self._positions[symbol]
+                                    
+                                self._pending_sl_tp = [
+                                    o for o in self._pending_sl_tp if o["symbol"] != symbol
+                                ]
+                                
+                                await self._send_alert(symbol, trg_result, {"action": side_to_execute.upper(), "confidence": 100, "rounds": 0})
+                                break
+                            except Exception as exc:
+                                logger.error(f"Failed to execute real SL/TP close order on exchange: {exc}")
+
         # Step 2: Fetch news sentiment
         sentiment = await self._fetch_sentiment(symbol)
 
         # Step 3: Run strategy
-        strategy = self._strategies.get(self.strategy_name)
-        if strategy is None:
-            logger.warning(f"Strategy {self.strategy_name} not found")
-            return
+        if self.strategy_name == "ai_debate":
+            signal_action = "BUY"  # AI Debate strategy: defer decision to debate engine
+        else:
+            strategy = self._strategies.get(self.strategy_name)
+            if strategy is None:
+                logger.warning(f"Strategy {self.strategy_name} not found")
+                return
 
-        signal_action = strategy.generate_signal(
-            price=current_price,
-            indicators=indicators,
-            market_data=market_data,
-        )
+            signal_action = strategy.generate_signal(
+                price=current_price,
+                indicators=indicators,
+                market_data=market_data,
+            )
 
         if signal_action == "HOLD":
             logger.debug(f"  [{symbol}] Strategy says HOLD")
@@ -733,7 +864,7 @@ class FullTradingBot:
             return
 
         # Step 7: Risk check
-        approved, reason = self._run_risk_check(
+        approved, reason = await self._run_risk_check(
             symbol, final_action, current_price
         )
         if not approved:
@@ -965,22 +1096,135 @@ class FullTradingBot:
             "rounds": 0,
         }
 
-    def _run_risk_check(
+    async def _get_latest_price(self, symbol: str) -> float | None:
+        """Get latest price from Redis cache."""
+        if self._redis_cache is None:
+            return None
+
+        try:
+            # Convert symbol format: BTC/USDT -> BTC-USDT
+            redis_symbol = symbol.replace("/", "-")
+            data = await self._redis_cache.get_latest_price(redis_symbol)
+            if data and "price" in data:
+                return float(data["price"])
+        except Exception as exc:
+            logger.debug(f"Failed to get price from Redis for {symbol}: {exc}")
+
+        return None
+
+    async def _get_portfolio_state(self) -> dict[str, Any]:
+        """Get the current portfolio state (cash, positions, total equity)."""
+        if self.mode == "dryrun":
+            if self._executor:
+                return self._executor.get_portfolio()
+            return {
+                "cash": self.config.trading.initial_capital,
+                "positions": {},
+                "total_value": self.config.trading.initial_capital,
+                "initial_balance": self.config.trading.initial_capital,
+                "total_pnl": 0.0,
+                "total_pnl_pct": 0.0,
+            }
+
+        # For testnet or live modes, query Binance via CCXT
+        try:
+            loop = asyncio.get_event_loop()
+            raw_balance = await loop.run_in_executor(
+                None, self._order_manager._client.fetch_balance
+            )
+            
+            quote_asset = "USDT"
+            if self.symbols:
+                parts = self.symbols[0].split("/")
+                if len(parts) > 1:
+                    quote_asset = parts[1]
+            
+            cash = float(raw_balance.get(quote_asset, {}).get("free", 0.0))
+            
+            positions_data = {}
+            total_value = cash
+            
+            for asset, bal in raw_balance.items():
+                if asset in ("free", "used", "total", "info", quote_asset):
+                    continue
+                
+                total_qty = float(bal.get("total", 0.0))
+                if total_qty > 0.000001:
+                    symbol = f"{asset}/{quote_asset}"
+                    current_price = await self._get_latest_price(symbol)
+                    if current_price is None:
+                        try:
+                            ticker = await loop.run_in_executor(
+                                None, lambda: self._order_manager._client.fetch_ticker(symbol)
+                            )
+                            current_price = float(ticker.get("last", 0.0))
+                        except Exception:
+                            current_price = 0.0
+                    
+                    market_value = total_qty * current_price
+                    total_value += market_value
+                    
+                    positions_data[symbol] = {
+                        "quantity": total_qty,
+                        "avg_price": current_price,
+                        "cost_basis": market_value,
+                        "market_value": market_value,
+                        "unrealized_pnl": 0.0,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    }
+                    
+            initial_balance = getattr(self.config.trading, "initial_capital", 10000.0)
+            total_pnl = total_value - initial_balance
+            total_pnl_pct = (total_pnl / initial_balance * 100) if initial_balance > 0 else 0.0
+            
+            return {
+                "cash": cash,
+                "positions": positions_data,
+                "total_value": total_value,
+                "initial_balance": initial_balance,
+                "total_pnl": total_pnl,
+                "total_pnl_pct": total_pnl_pct,
+            }
+        except Exception as e:
+            logger.error(f"Failed to fetch portfolio state from exchange: {e}")
+            return {
+                "cash": self.config.trading.initial_capital,
+                "positions": {},
+                "total_value": self.config.trading.initial_capital,
+                "initial_balance": self.config.trading.initial_capital,
+                "total_pnl": 0.0,
+                "total_pnl_pct": 0.0,
+            }
+
+    async def _run_risk_check(
         self, symbol: str, action: str, price: float
     ) -> tuple[bool, str]:
         """Run risk engine pre-trade check."""
         if not self._risk_engine:
-            return True, ""
+            return True, "Risk engine not available"
 
-        check_result = self._risk_engine.check_pre_trade(
-            action=action,
+        portfolio = await self._get_portfolio_state()
+        positions = portfolio.get("positions", {})
+
+        # Calculate a reasonable quantity based on 10% of portfolio cash
+        quantity_pct = 0.10
+        available = portfolio["cash"] * quantity_pct
+        quantity = available / price if price > 0 else 0
+
+        if quantity <= 0:
+            return False, "Insufficient cash for minimum quantity"
+
+        approved, reason = self._risk_engine.pre_trade_checks(
             symbol=symbol,
+            side=action.lower(),
+            quantity=quantity,
             price=price,
-            portfolio=self._portfolio,
-            positions=self._positions,
+            current_equity=portfolio["total_value"],
+            start_equity=self.config.trading.initial_capital,
+            positions=positions,
         )
 
-        return check_result.approved, check_result.reason
+        return approved, reason
 
     async def _execute_trade(
         self,
@@ -990,54 +1234,229 @@ class FullTradingBot:
         debate_result: dict,
     ) -> dict[str, Any] | None:
         """Execute a trade (dry-run or live)."""
-        if not self._executor:
-            return None
-
-        # Determine quantity (10% of portfolio for demo)
+        portfolio = await self._get_portfolio_state()
         quantity_pct = 0.10
-        available = self._portfolio["cash"] * quantity_pct
+        available = portfolio["cash"] * quantity_pct
         quantity = available / price if price > 0 else 0
 
+        if self.mode != "dryrun":
+            try:
+                quantity = self._order_manager._precision_amount(symbol, quantity)
+            except Exception:
+                pass
+
         if quantity <= 0:
-            logger.warning(f"Insufficient funds for {symbol} {action}")
+            logger.warning(f"Insufficient funds for {symbol} {action} (quantity={quantity:.6f})")
             return None
 
         try:
-            if action == "BUY":
-                result = self._executor.buy(symbol, quantity, price)
-                self._positions[symbol] = {
-                    "side": "LONG",
-                    "quantity": quantity,
-                    "entry_price": price,
-                    "entry_time": datetime.now(timezone.utc).isoformat(),
-                }
-            elif action == "SELL":
-                # Close position if exists
-                if symbol in self._positions:
-                    pos = self._positions[symbol]
-                    pnl = (price - pos["entry_price"]) * pos["quantity"]
-                    result = self._executor.sell(symbol, pos["quantity"], price)
-                    del self._positions[symbol]
-                else:
-                    # Short sell
-                    result = self._executor.sell(symbol, quantity, price)
+            ts = datetime.now(timezone.utc).isoformat()
+            
+            if self.mode == "dryrun":
+                if not self._executor:
+                    return None
+                if action == "BUY":
+                    result = self._executor.simulate_buy(symbol, quantity, price, timestamp=ts)
                     self._positions[symbol] = {
-                        "side": "SHORT",
+                        "side": "LONG",
                         "quantity": quantity,
                         "entry_price": price,
-                        "entry_time": datetime.now(timezone.utc).isoformat(),
+                        "entry_time": ts,
                     }
-            else:
-                return None
+                    
+                    # Register SL/TP orders if provided
+                    sl = debate_result.get("stop_loss", 0)
+                    tp = debate_result.get("take_profit", 0)
+                    if sl and sl > 0:
+                        self._pending_sl_tp.append({
+                            "id": f"sl_{symbol.replace('/', '_')}_{int(time.time())}",
+                            "symbol": symbol,
+                            "side": "sell",
+                            "type": "stop_loss",
+                            "stop_price": float(sl),
+                            "quantity": quantity,
+                            "direction": "below",
+                        })
+                        logger.info(f"Registered Stop Loss at ${sl:.2f} for {symbol}")
+                    if tp and tp > 0:
+                        self._pending_sl_tp.append({
+                            "id": f"tp_{symbol.replace('/', '_')}_{int(time.time())}",
+                            "symbol": symbol,
+                            "side": "sell",
+                            "type": "take_profit",
+                            "stop_price": float(tp),
+                            "quantity": quantity,
+                            "direction": "above",
+                        })
+                        logger.info(f"Registered Take Profit at ${tp:.2f} for {symbol}")
 
-            return {
-                "symbol": symbol,
-                "side": action,
-                "quantity": quantity,
-                "price": price,
-                "result": result,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            }
+                elif action == "SELL":
+                    # Close position if exists
+                    if symbol in self._positions:
+                        pos = self._positions[symbol]
+                        result = self._executor.simulate_sell(symbol, pos["quantity"], price, timestamp=ts)
+                        del self._positions[symbol]
+                        # Clear pending SL/TP for this symbol since position is closed
+                        self._pending_sl_tp = [o for o in self._pending_sl_tp if o["symbol"] != symbol]
+                    else:
+                        # Short sell simulation
+                        result = self._executor.simulate_sell(symbol, quantity, price, timestamp=ts)
+                        self._positions[symbol] = {
+                            "side": "SHORT",
+                            "quantity": quantity,
+                            "entry_price": price,
+                            "entry_time": ts,
+                        }
+                        
+                        # Register SL/TP for short (inverse directions)
+                        sl = debate_result.get("stop_loss", 0)
+                        tp = debate_result.get("take_profit", 0)
+                        if sl and sl > 0:
+                            self._pending_sl_tp.append({
+                                "id": f"sl_{symbol.replace('/', '_')}_{int(time.time())}",
+                                "symbol": symbol,
+                                "side": "buy",
+                                "type": "stop_loss",
+                                "stop_price": float(sl),
+                                "quantity": quantity,
+                                "direction": "above",
+                            })
+                            logger.info(f"Registered Stop Loss at ${sl:.2f} for short {symbol}")
+                        if tp and tp > 0:
+                            self._pending_sl_tp.append({
+                                "id": f"tp_{symbol.replace('/', '_')}_{int(time.time())}",
+                                "symbol": symbol,
+                                "side": "buy",
+                                "type": "take_profit",
+                                "stop_price": float(tp),
+                                "quantity": quantity,
+                                "direction": "below",
+                            })
+                            logger.info(f"Registered Take Profit at ${tp:.2f} for short {symbol}")
+                else:
+                    return None
+
+                return {
+                    "symbol": symbol,
+                    "side": action,
+                    "quantity": quantity,
+                    "price": price,
+                    "result": result,
+                    "timestamp": ts,
+                }
+            else:
+                # Real CCXT Exchange execution
+                loop = asyncio.get_event_loop()
+                
+                if action == "BUY":
+                    logger.info(f"🚨 Sending real market BUY order to exchange for {symbol}...")
+                    order = await loop.run_in_executor(
+                        None,
+                        lambda: self._order_manager.create_market_order(
+                            symbol=symbol,
+                            side="buy",
+                            amount=quantity
+                        )
+                    )
+                    
+                    filled_qty = float(order.get("filled", quantity))
+                    avg_fill_price = float(order.get("average", price) or price)
+                    
+                    result = {
+                        "trade_id": order.get("id"),
+                        "symbol": symbol,
+                        "side": "buy",
+                        "quantity": filled_qty,
+                        "price": avg_fill_price,
+                        "cost": filled_qty * avg_fill_price,
+                        "cash_remaining": portfolio["cash"] - (filled_qty * avg_fill_price),
+                        "timestamp": ts,
+                        "order_info": order,
+                    }
+                    
+                    self._positions[symbol] = {
+                        "side": "LONG",
+                        "quantity": filled_qty,
+                        "entry_price": avg_fill_price,
+                        "entry_time": ts,
+                    }
+                    
+                    sl = debate_result.get("stop_loss", 0)
+                    tp = debate_result.get("take_profit", 0)
+                    if sl and sl > 0:
+                        self._pending_sl_tp.append({
+                            "id": f"sl_{symbol.replace('/', '_')}_{int(time.time())}",
+                            "symbol": symbol,
+                            "side": "sell",
+                            "type": "stop_loss",
+                            "stop_price": float(sl),
+                            "quantity": filled_qty,
+                            "direction": "below",
+                        })
+                    if tp and tp > 0:
+                        self._pending_sl_tp.append({
+                            "id": f"tp_{symbol.replace('/', '_')}_{int(time.time())}",
+                            "symbol": symbol,
+                            "side": "sell",
+                            "type": "take_profit",
+                            "stop_price": float(tp),
+                            "quantity": filled_qty,
+                            "direction": "above",
+                        })
+                    
+                    result["strategy"] = self.strategy_name
+                    result["ai_confidence"] = debate_result.get("confidence", 50)
+                    result["stop_loss"] = debate_result.get("stop_loss")
+                    result["take_profit"] = debate_result.get("take_profit")
+                    return result
+
+                elif action == "SELL":
+                    logger.info(f"🚨 Sending real market SELL order to exchange for {symbol}...")
+                    
+                    sell_quantity = quantity
+                    if symbol in self._positions:
+                        sell_quantity = self._positions[symbol]["quantity"]
+                    
+                    order = await loop.run_in_executor(
+                        None,
+                        lambda: self._order_manager.create_market_order(
+                            symbol=symbol,
+                            side="sell",
+                            amount=sell_quantity
+                        )
+                    )
+                    
+                    filled_qty = float(order.get("filled", sell_quantity))
+                    avg_fill_price = float(order.get("average", price) or price)
+                    
+                    pnl = 0.0
+                    pnl_pct = 0.0
+                    if symbol in self._positions:
+                        entry_price = self._positions[symbol]["entry_price"]
+                        pnl = (avg_fill_price - entry_price) * filled_qty
+                        pnl_pct = ((avg_fill_price - entry_price) / entry_price * 100) if entry_price > 0 else 0.0
+                        del self._positions[symbol]
+                        self._pending_sl_tp = [o for o in self._pending_sl_tp if o["symbol"] != symbol]
+                    
+                    result = {
+                        "trade_id": order.get("id"),
+                        "symbol": symbol,
+                        "side": "sell",
+                        "quantity": filled_qty,
+                        "price": avg_fill_price,
+                        "revenue": filled_qty * avg_fill_price,
+                        "pnl": pnl,
+                        "pnl_pct": pnl_pct,
+                        "cash_total": portfolio["cash"] + (filled_qty * avg_fill_price),
+                        "timestamp": ts,
+                        "order_info": order,
+                    }
+                    
+                    result["strategy"] = self.strategy_name
+                    result["ai_confidence"] = debate_result.get("confidence", 50)
+                    return result
+                else:
+                    return None
         except Exception as exc:
             logger.error(f"Trade execution failed for {symbol}: {exc}")
             return None
@@ -1189,15 +1608,15 @@ class FullTradingBot:
         if self._last_autotune is None or (now - self._last_autotune).days >= 7:
             try:
                 # Check if decay detected
-                needs_optimization = self._auto_tuner.detect_strategy_decay()
+                needs_optimization = await self._auto_tuner.detect_strategy_decay()
 
                 if needs_optimization:
                     logger.info("🔧 Strategy decay detected — running optimization...")
-                    report = self._auto_tuner.weekly_optimization_cycle()
+                    report = await self._auto_tuner.weekly_optimization_cycle()
                     logger.info(f"  Optimization complete: {report.get('status', 'unknown')}")
                 else:
                     # Get recommendations regardless
-                    recommendations = self._auto_tuner.get_optimization_recommendations()
+                    recommendations = await self._auto_tuner.get_optimization_recommendations()
                     for rec in recommendations:
                         logger.info(f"  💡 {rec}")
 
@@ -1244,7 +1663,7 @@ def run_backtest(config, args):
         raise ValueError(f"Unknown strategy: {config.strategy.name}")
 
     end_date = datetime.now()
-    start_date = end_date - timedelta(days=90)
+    start_date = end_date - timedelta(days=10)
 
     logger.info(f"📅 Backtest: {start_date.strftime('%Y-%m-%d')} → {end_date.strftime('%Y-%m-%d')}")
     logger.info(f"📊 Symbol: {config.trading.symbols[0]}")
