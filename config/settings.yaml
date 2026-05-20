@@ -1,0 +1,36 @@
+trading:
+  mode: dryrun
+  symbols:
+    - BTC/USDT
+    - ETH/USDT
+    - SOL/USDT
+  initial_capital: 10000
+
+strategy:
+  name: sma_cross
+  sma_fast: 20
+  sma_slow: 50
+  rsi_period: 14
+  rsi_overbought: 70
+  rsi_oversold: 30
+
+risk:
+  max_daily_loss_pct: 3.0
+  max_drawdown_pct: 10.0
+  max_position_pct: 20.0
+  max_leverage: 3
+
+monitoring:
+  telegram_enabled: false
+  telegram_bot_token: ""
+  telegram_chat_id: ""
+  log_level: INFO
+
+data:
+  exchange: binance
+  testnet: true
+  candle_interval: "1m"
+  symbols:
+    - BTC-USDT
+    - ETH-USDT
+    - SOL-USDT

@@ -1,0 +1,191 @@
+# =============================================================================
+# Production Docker Compose
+# Services: app (trading bot), redis, questdb, postgres, grafana
+# =============================================================================
+version: "3.8"
+
+services:
+  # ---------------------------------------------------------------------------
+  # Trading Bot Application
+  # ---------------------------------------------------------------------------
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    container_name: trading-app
+    restart: always
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - REDIS_URL=redis://redis:6379/0
+      - QUESTDB_HOST=questdb
+      - QUESTDB_PORT=9000
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=trading_db
+      - POSTGRES_USER=trading_user
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - GRAFANA_URL=http://grafana:3000
+      - LOG_LEVEL=INFO
+    ports:
+      - "8501:8501"   # Streamlit dashboard
+    depends_on:
+      redis:
+        condition: service_healthy
+      questdb:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      grafana:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+        reservations:
+          cpus: "0.5"
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - trading-net
+
+  # ---------------------------------------------------------------------------
+  # Redis — caching & pub/sub message broker
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: trading-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru --appendonly yes
+    volumes:
+      - redis-data:/data
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - trading-net
+
+  # ---------------------------------------------------------------------------
+  # QuestDB — high-performance time-series database
+  # ---------------------------------------------------------------------------
+  questdb:
+    image: questdb/questdb:latest
+    container_name: trading-questdb
+    ports:
+      - "9000:9000"   # Web console
+      - "8812:8812"   # PostgreSQL wire protocol
+      - "9009:9009"   # ILP TCP
+      - "9003:9003"   # HTTP REST
+    volumes:
+      - questdb-data:/root/.questdb
+    environment:
+      - QDB_HTTP_READ_ONLY=false
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 4G
+        reservations:
+          cpus: "1.0"
+          memory: 1G
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/exp?query=select+1"]
+      interval: 15s
+      timeout: 10s
+      retries: 3
+    networks:
+      - trading-net
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — relational storage for trades, audit logs, memory
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:15-alpine
+    container_name: trading-postgres
+    environment:
+      POSTGRES_DB: trading_db
+      POSTGRES_USER: trading_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trading_user -d trading_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - trading-net
+
+  # ---------------------------------------------------------------------------
+  # Grafana — monitoring dashboards
+  # ---------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: trading-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=http://localhost:3000
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./config/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./config/grafana/provisioning/dashboards.yaml:/etc/grafana/provisioning/dashboards/dashboards.yaml:ro
+      - ./config/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./config/grafana/grafana.ini:/etc/grafana/grafana.ini:ro
+    depends_on:
+      questdb:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 3
+    networks:
+      - trading-net
+
+volumes:
+  redis-data:
+  questdb-data:
+  pg-data:
+  grafana-data:
+
+networks:
+  trading-net:
+    driver: bridge

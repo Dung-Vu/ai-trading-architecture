@@ -1,0 +1,71 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.egg-info/
+.eggs/
+.mypy_cache/
+.pytest_cache/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment files
+.env
+.env.local
+.env.production
+
+# Logs
+logs/*.log
+logs/*.jsonl
+logs/*.html
+
+# Data
+*.db
+*.sqlite
+*.h5
+questdb_data/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+.coverage
+htmlcov/
+*.cover
+
+# Distribution / packaging
+.Python
+develop-eggs/
+downloads/
+*.manifest
+*.spec
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# ta-lib build
+ta-lib/
+
+# Compressed archives
+*.tar.gz
+*.zip
+*.rar

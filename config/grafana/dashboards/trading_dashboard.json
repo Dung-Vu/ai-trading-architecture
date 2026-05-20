@@ -1,0 +1,360 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      },
+      {
+        "datasource": {
+          "type": "questdb",
+          "uid": "questdb"
+        },
+        "enable": true,
+        "expr": "SELECT timestamp, side, symbol, price, quantity FROM trades WHERE timestamp > now() - 1h",
+        "hide": false,
+        "iconColor": "yellow",
+        "name": "Trade Executions",
+        "rawQuery": "SELECT timestamp, side || ' ' || symbol || ' ' || quantity || ' @ ' || price AS text FROM trades WHERE timestamp > $timeFrom() AND timestamp < $timeTo() ORDER BY timestamp DESC"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "id": 1,
+      "title": "Real-time P&L",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 16, "x": 0, "y": 0 },
+      "datasource": { "type": "questdb", "uid": "questdb" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "gradientMode": "opacity"
+          },
+          "unit": "currencyUSD",
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT timestamp, portfolio_value FROM portfolio_snapshots WHERE timestamp > $timeFrom() AND timestamp < $timeTo() ORDER BY timestamp",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "tooltip": { "mode": "single" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      }
+    },
+    {
+      "id": 2,
+      "title": "Win Rate",
+      "type": "gauge",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 0 },
+      "datasource": { "type": "questdb", "uid": "questdb" },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 100,
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "orange", "value": 40 },
+              { "color": "green", "value": 55 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        }
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT COUNT(CASE WHEN pnl > 0 THEN 1 END) * 100.0 / COUNT(*) AS win_rate FROM trades WHERE timestamp > $timeFrom() AND timestamp < $timeTo()",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "values": false, "calcs": ["lastNotNull"], "fields": "win_rate" },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      }
+    },
+    {
+      "id": 3,
+      "title": "Open Positions",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "align": "auto", "displayMode": "auto", "inspect": false },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "unrealized_pnl" }, "properties": [{ "id": "custom.displayMode", "value": "color-background" }] },
+          { "matcher": { "id": "byName", "options": "pnl_pct" }, "properties": [{ "id": "unit", "value": "percent" }] }
+        ]
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT symbol, side, quantity, entry_price, current_price, unrealized_pnl, pnl_pct, open_time FROM open_positions WHERE status = 'open' ORDER BY open_time DESC",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "sortBy": [{ "displayName": "open_time", "desc": true }]
+      }
+    },
+    {
+      "id": 4,
+      "title": "Bot Health Status",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 8 },
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          },
+          "mappings": [
+            { "options": { "1": { "color": "green", "index": 0, "text": "RUNNING" } }, "type": "value" },
+            { "options": { "0": { "color": "red", "index": 1, "text": "STOPPED" } }, "type": "value" }
+          ]
+        }
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT is_running FROM bot_status ORDER BY updated_at DESC LIMIT 1",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "auto", "textMode": "auto" }
+    },
+    {
+      "id": 5,
+      "title": "Total Trades (24h)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 8 },
+      "datasource": { "type": "questdb", "uid": "questdb" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }
+        }
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT COUNT(*) FROM trades WHERE timestamp > now() - 24h",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "textMode": "auto" }
+    },
+    {
+      "id": 6,
+      "title": "Net P&L (24h)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 8 },
+      "datasource": { "type": "questdb", "uid": "questdb" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "unit": "currencyUSD",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 0 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT SUM(pnl) AS net_pnl FROM trades WHERE timestamp > now() - 24h",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "textMode": "auto" }
+    },
+    {
+      "id": 7,
+      "title": "Recent Trade Log",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 16 },
+      "datasource": { "type": "questdb", "uid": "questdb" },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "align": "auto", "displayMode": "auto", "filterable": true }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "side" }, "properties": [
+            { "id": "custom.displayMode", "value": "color-background" },
+            { "id": "mappings", "value": [
+              { "options": { "buy": { "color": "dark-green", "index": 0 } }, "type": "value" },
+              { "options": { "sell": { "color": "dark-red", "index": 1 } }, "type": "value" }
+            ]}
+          ]},
+          { "matcher": { "id": "byName", "options": "pnl" }, "properties": [{ "id": "unit", "value": "currencyUSD" }] },
+          { "matcher": { "id": "byName", "options": "price" }, "properties": [{ "id": "unit", "value": "currencyUSD" }] }
+        ]
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT timestamp, symbol, side, quantity, price, pnl, strategy_name, notes FROM trades WHERE timestamp > $timeFrom() AND timestamp < $timeTo() ORDER BY timestamp DESC LIMIT 100",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "options": { "showHeader": true, "sortBy": [{ "displayName": "timestamp", "desc": true }] }
+    },
+    {
+      "id": 8,
+      "title": "Drawdown",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 24 },
+      "datasource": { "type": "questdb", "uid": "questdb" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic", "fixedColor": "red" },
+          "custom": { "fillOpacity": 20, "lineWidth": 1 },
+          "unit": "percent",
+          "decimals": 2
+        }
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT timestamp, drawdown_pct FROM portfolio_snapshots WHERE timestamp > $timeFrom() AND timestamp < $timeTo() ORDER BY timestamp",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "tooltip": { "mode": "single" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      },
+      "thresholds": [
+        { "value": -15, "color": "dark-red" }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Trading Volume (24h)",
+      "type": "bargauge",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 24 },
+      "datasource": { "type": "questdb", "uid": "questdb" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "currencyUSD",
+          "decimals": 2
+        }
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT symbol, SUM(quantity * price) AS volume FROM trades WHERE timestamp > now() - 24h GROUP BY symbol ORDER BY volume DESC",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "reduceOptions": { "values": true, "calcs": ["lastNotNull"], "fields": "volume" }
+      }
+    },
+    {
+      "id": 10,
+      "title": "Portfolio Value Over Time",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 30 },
+      "datasource": { "type": "questdb", "uid": "questdb" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "unit": "currencyUSD",
+          "decimals": 2
+        }
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT timestamp, portfolio_value, initial_capital FROM portfolio_snapshots WHERE timestamp > $timeFrom() AND timestamp < $timeTo() ORDER BY timestamp",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      }
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["trading", "crypto", "bot"],
+  "templating": {
+    "list": [
+      {
+        "name": "symbol",
+        "type": "query",
+        "datasource": { "type": "questdb", "uid": "questdb" },
+        "query": "SELECT DISTINCT symbol FROM trades ORDER BY symbol",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "current": { "text": "All", "value": "$__all" }
+      },
+      {
+        "name": "strategy",
+        "type": "query",
+        "datasource": { "type": "postgres", "uid": "postgres" },
+        "query": "SELECT DISTINCT strategy_name FROM bot_decisions ORDER BY strategy_name",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "current": { "text": "All", "value": "$__all" }
+      }
+    ]
+  },
+  "time": { "from": "now-24h", "to": "now" },
+  "timepicker": {
+    "refresh_intervals": ["5s", "10s", "30s", "1m", "5m"]
+  },
+  "timezone": "browser",
+  "title": "AI Trading Bot Dashboard",
+  "uid": "ai-trading-bot",
+  "version": 1,
+  "weekStart": ""
+}

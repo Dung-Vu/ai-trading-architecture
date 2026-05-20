@@ -1,0 +1,94 @@
+"""
+Unit tests for RiskEngine module.
+"""
+
+import pytest
+from src.risk.risk_engine import RiskEngine
+
+
+class TestRiskEngine:
+    @pytest.fixture
+    def engine(self):
+        return RiskEngine(
+            max_daily_loss_pct=0.03,
+            max_drawdown_pct=0.10,
+            max_position_pct=0.20,
+            max_leverage=3,
+        )
+
+    def test_pre_trade_approved(self, engine):
+        approved, reason = engine.pre_trade_checks(
+            symbol="BTC/USDT",
+            side="buy",
+            quantity=0.01,
+            price=50000.0,
+            current_equity=10000.0,
+            start_equity=10000.0,
+            positions={},
+        )
+        assert approved is True
+
+    def test_pre_trade_daily_loss_exceeded(self, engine):
+        engine.update_daily_pnl(-350.0)  # 3.5% loss on $10k
+        engine.update_peak_equity(10000.0)
+
+        approved, reason = engine.pre_trade_checks(
+            symbol="BTC/USDT",
+            side="buy",
+            quantity=0.01,
+            price=50000.0,
+            current_equity=9650.0,
+            start_equity=10000.0,
+            positions={},
+        )
+        assert approved is False
+        assert "daily loss" in reason.lower()
+
+    def test_pre_trade_drawdown_exceeded(self, engine):
+        engine.update_peak_equity(10000.0)
+
+        approved, reason = engine.pre_trade_checks(
+            symbol="BTC/USDT",
+            side="buy",
+            quantity=0.01,
+            price=50000.0,
+            current_equity=8900.0,  # 11% drawdown
+            start_equity=10000.0,
+            positions={},
+        )
+        assert approved is False
+        assert "drawdown" in reason.lower()
+
+    def test_pre_trade_concentration_exceeded(self, engine):
+        positions = {
+            "ETH/USDT": {"value": 2500.0},  # 25% of $10k
+        }
+
+        approved, reason = engine.pre_trade_checks(
+            symbol="ETH/USDT",
+            side="buy",
+            quantity=0.1,
+            price=3000.0,
+            current_equity=10000.0,
+            start_equity=10000.0,
+            positions=positions,
+        )
+        assert approved is False
+        assert "concentration" in reason.lower()
+
+    def test_get_status(self, engine):
+        engine.update_peak_equity(10000.0)
+        engine.update_daily_pnl(-100.0)
+
+        status = engine.get_status()
+        assert "daily_pnl" in status
+        assert "drawdown_pct" in status
+        assert status["daily_pnl"] == -100.0
+        assert status["drawdown_pct"] == 1.0  # 1% drawdown
+
+    def test_reset_daily(self, engine):
+        engine.update_daily_pnl(-200.0)
+        engine.reset_daily()
+
+        status = engine.get_status()
+        assert status["daily_pnl"] == 0.0

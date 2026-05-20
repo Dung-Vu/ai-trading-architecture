@@ -1,0 +1,72 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "ai-trading-architecture"
+version = "0.1.0"
+description = "AI Autonomous Trading System using Multi-Agent LLM Debate"
+requires-python = ">=3.11"
+dependencies = [
+    "aiohttp>=3.9.0",
+    "websockets>=12.0",
+    "pydantic>=2.0,<3.0",
+    "python-dotenv>=1.0.0",
+    "loguru>=0.7.0",
+    "pyyaml>=6.0",
+    "cryptofeed>=2.4.0",
+    "questdb>=3.0.0",
+    "redis>=5.0.0",
+    "ccxt>=4.2.0",
+    "lumibot>=3.6.0",
+    "pandas>=2.1.0",
+    "numpy>=1.26.0",
+    "ta>=0.11.0",
+    "asyncpg>=0.29.0",
+    "psycopg2-binary>=2.9.9",
+    "qdrant-client>=1.7.0",
+    "python-telegram-bot>=21.0",
+    "plotly>=5.18.0",
+    "matplotlib>=3.8.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.1.0",
+    "black>=24.1.0",
+    "mypy>=1.8.0",
+]
+ai = [
+    "langgraph>=0.2.0",
+    "langchain>=0.3.0",
+    "litellm>=1.50.0",
+    "dspy-ai>=2.5.0",
+    "mem0ai>=0.1.0",
+]
+monitoring = [
+    "streamlit>=1.30.0",
+    "wandb>=0.16.0",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+exclude = ["venv", ".venv", "__pycache__"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-v --tb=short"
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
