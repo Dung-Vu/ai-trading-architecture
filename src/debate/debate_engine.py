@@ -10,17 +10,19 @@ edges based on round count.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import time
+from types import SimpleNamespace
 from typing import Any
 
 from loguru import logger
+from src.shared_utils import trim_mapping_size
 
 try:
     from langgraph.graph import END, START, StateGraph
 except ImportError:
-    raise ImportError(
-        "langgraph is required. Install with: pip install langgraph"
-    )
+    END = START = StateGraph = None  # type: ignore[assignment]
 from typing_extensions import TypedDict
 
 from .agents import BearAgent, BullAgent, DevilsAdvocate, JudgeAgent, RiskManagerAgent
@@ -91,15 +93,31 @@ class DebateEngine:
         # Instantiate agents
         self.bull = BullAgent(llm_client, temperature=config.temperature)
         self.bear = BearAgent(llm_client, temperature=config.temperature)
-        self.devil = DevilsAdvocate(llm_client, temperature=config.temperature * 1.1)  # Slightly more creative
-        self.judge = JudgeAgent(llm_client, temperature=config.temperature * 0.5)  # More deterministic
-        self.risk_manager = RiskManagerAgent(llm_client, temperature=config.temperature * 0.5)
+        self.devil = DevilsAdvocate(llm_client, temperature=config.temperature)
+        self.judge = JudgeAgent(llm_client, temperature=config.temperature)
+        risk_config = SimpleNamespace(
+            max_daily_loss_pct=config.risk_max_daily_loss_pct,
+            max_drawdown_pct=config.risk_max_drawdown_pct,
+            max_position_pct=config.risk_max_position_pct,
+            max_leverage=config.risk_max_leverage,
+        )
+        self.risk_manager = RiskManagerAgent(
+            llm_client,
+            temperature=config.temperature,
+            risk_config=risk_config,
+        )
+        self._result_cache: dict[str, tuple[float, DebateResult]] = {}
 
         # Build the LangGraph workflow
         self.graph = self._build_graph()
 
     def _build_graph(self) -> Any:
         """Build the LangGraph StateGraph for the debate workflow."""
+        if StateGraph is None or START is None or END is None:
+            raise ImportError(
+                "langgraph is required to use DebateEngine. Install with: pip install langgraph"
+            )
+
         workflow = StateGraph(DebateState)
 
         # Add nodes
@@ -159,6 +177,23 @@ class DebateEngine:
         Returns:
             DebateResult with final action, confidence, SL, TP, and reasoning.
         """
+        cache_key = self._build_cache_key(
+            market_data=market_data,
+            current_positions=current_positions,
+            portfolio=portfolio,
+            symbol=symbol,
+        )
+        cached = self._get_cached_result(cache_key)
+        if cached is not None:
+            cached_result = cached.model_copy(deep=True)
+            cached_result.metadata = {
+                **cached_result.metadata,
+                "cache_hit": True,
+                "total_time_seconds": 0.0,
+            }
+            logger.info(f"Debate cache hit for {symbol}")
+            return cached_result
+
         start = time.monotonic()
 
         initial_state: DebateState = {
@@ -189,6 +224,9 @@ class DebateEngine:
         stats = self.llm_client.get_stats()
         result.metadata["llm_stats"] = stats
         result.metadata["total_time_seconds"] = round(time.monotonic() - start, 2)
+        result.metadata["cache_hit"] = False
+
+        self._cache_result(cache_key, result)
 
         logger.info(
             f"Debate complete for {symbol}: "
@@ -199,6 +237,66 @@ class DebateEngine:
         )
 
         return result
+
+    def _build_cache_key(
+        self,
+        *,
+        market_data: dict[str, Any],
+        current_positions: dict[str, Any] | None,
+        portfolio: dict[str, Any] | None,
+        symbol: str,
+    ) -> str:
+        """Build a stable cache key for an exact debate input snapshot."""
+        payload = {
+            "symbol": symbol,
+            "market_data": self._normalize_for_cache(market_data),
+            "current_positions": self._normalize_for_cache(current_positions or {}),
+            "portfolio": self._normalize_for_cache(portfolio or {}),
+            "max_rounds": self.config.max_rounds,
+            "temperature": self.config.temperature,
+            "llm_model": self.config.llm_model,
+        }
+        encoded = json.dumps(payload, sort_keys=True, default=str)
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    @classmethod
+    def _normalize_for_cache(cls, value: Any) -> Any:
+        """Strip volatile fields so identical market snapshots can be cached."""
+        volatile_keys = {"timestamp", "created_at", "updated_at", "entry_time", "start_time"}
+        if isinstance(value, dict):
+            return {
+                key: cls._normalize_for_cache(item)
+                for key, item in value.items()
+                if key not in volatile_keys
+            }
+        if isinstance(value, list):
+            return [cls._normalize_for_cache(item) for item in value]
+        return value
+
+    def _get_cached_result(self, cache_key: str) -> DebateResult | None:
+        """Return a cached debate result if its TTL has not expired."""
+        cached = self._result_cache.get(cache_key)
+        if cached is None:
+            return None
+
+        expires_at, result = cached
+        now = time.monotonic()
+        if expires_at <= now:
+            self._result_cache.pop(cache_key, None)
+            return None
+
+        return result
+
+    def _cache_result(self, cache_key: str, result: DebateResult) -> None:
+        """Store a debate result in the short-lived exact-input cache."""
+        ttl = self.config.result_cache_ttl_seconds
+        if ttl <= 0:
+            return
+
+        expires_at = time.monotonic() + ttl
+        self._result_cache[cache_key] = (expires_at, result.model_copy(deep=True))
+
+        trim_mapping_size(self._result_cache, self.config.result_cache_max_entries)
 
     # ─── Node Functions ───────────────────────────────────────────────
 
@@ -367,7 +465,7 @@ class DebateEngine:
         if risk_decision in ("REJECT", "FLATTEN"):
             action = "HOLD"
 
-        # Extract round arguments
+        # Preserve the latest argument from each role rather than pinning to round 1.
         bull_arg = ""
         bear_arg = ""
         devil_arg = ""
@@ -376,11 +474,11 @@ class DebateEngine:
         for r in state.get("debate_rounds", []):
             rounds.append(DebateRound(**r))
             role = r.get("agent_role", "")
-            if role == "bull" and not bull_arg:
+            if role == "bull":
                 bull_arg = r.get("argument", "")
-            elif role == "bear" and not bear_arg:
+            elif role == "bear":
                 bear_arg = r.get("argument", "")
-            elif role == "devil" and not devil_arg:
+            elif role == "devil":
                 devil_arg = r.get("argument", "")
 
         return DebateResult(

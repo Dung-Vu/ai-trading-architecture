@@ -10,6 +10,20 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from src.config import (
+    get_default_debate_cache_max_entries,
+    get_default_debate_cache_ttl_seconds,
+    get_default_debate_max_rounds,
+    get_default_debate_max_tokens,
+    get_default_debate_temperature,
+    get_default_debate_timeout_seconds,
+    get_default_fallback_litellm_model,
+    get_default_litellm_model,
+    get_trading_symbols,
+    env_float,
+    env_int,
+)
+
 
 # ─── DebateRound ──────────────────────────────────────────────────────
 class DebateRound(BaseModel):
@@ -42,8 +56,8 @@ class DebateResult(BaseModel):
         ..., ge=0.0, le=100.0, description="Confidence level (0-100)"
     )
     reason: str = Field(..., description="Synthesized reasoning for the decision")
-    stop_loss: float = Field(..., gt=0.0, description="Stop-loss price level")
-    take_profit: float = Field(..., gt=0.0, description="Take-profit price level")
+    stop_loss: float = Field(..., ge=0.0, description="Stop-loss price level")
+    take_profit: float = Field(..., ge=0.0, description="Take-profit price level")
     bull_argument: str = Field(
         default="", description="Summary of the strongest bull argument"
     )
@@ -106,21 +120,27 @@ class DebateConfig(BaseModel):
     """Configuration for a debate session."""
 
     max_rounds: int = Field(
-        default=3, ge=1, le=5, description="Maximum number of debate rounds"
+        default_factory=get_default_debate_max_rounds,
+        ge=1,
+        le=5,
+        description="Maximum number of debate rounds",
     )
     llm_model: str = Field(
-        default="anthropic/claude-sonnet-4",
+        default_factory=get_default_litellm_model,
         description="LiteLLM model identifier (provider/model)",
     )
     fallback_model: str = Field(
-        default="openai/gpt-4o",
+        default_factory=get_default_fallback_litellm_model,
         description="Fallback model if primary fails",
     )
     temperature: float = Field(
-        default=0.7, ge=0.0, le=1.5, description="LLM temperature for creativity"
+        default_factory=get_default_debate_temperature,
+        ge=0.0,
+        le=1.5,
+        description="LLM temperature for creativity",
     )
     symbols: list[str] = Field(
-        default_factory=lambda: ["BTC/USDT"],
+        default_factory=get_trading_symbols,
         description="Trading symbols to debate",
     )
     market_data: dict[str, Any] = Field(
@@ -128,8 +148,42 @@ class DebateConfig(BaseModel):
         description="Market data payload (price, indicators, volume, news, etc.)",
     )
     max_tokens: int = Field(
-        default=4096, ge=256, description="Max tokens for LLM response"
+        default_factory=get_default_debate_max_tokens,
+        ge=256,
+        description="Max tokens for LLM response",
     )
     timeout_seconds: float = Field(
-        default=120.0, gt=0.0, description="Timeout per LLM call in seconds"
+        default_factory=get_default_debate_timeout_seconds,
+        gt=0.0,
+        description="Timeout per LLM call in seconds",
+    )
+    result_cache_ttl_seconds: float = Field(
+        default_factory=get_default_debate_cache_ttl_seconds,
+        ge=0.0,
+        description="TTL for exact debate-result caching",
+    )
+    result_cache_max_entries: int = Field(
+        default_factory=get_default_debate_cache_max_entries,
+        ge=1,
+        description="Maximum number of cached debate results",
+    )
+    risk_max_daily_loss_pct: float = Field(
+        default_factory=lambda: env_float("MAX_DAILY_LOSS_PCT", 3.0),
+        ge=0.0,
+        description="Risk manager max daily loss percentage",
+    )
+    risk_max_drawdown_pct: float = Field(
+        default_factory=lambda: env_float("MAX_DRAWDOWN_PCT", 10.0),
+        ge=0.0,
+        description="Risk manager max drawdown percentage",
+    )
+    risk_max_position_pct: float = Field(
+        default_factory=lambda: env_float("MAX_POSITION_PCT", 20.0),
+        ge=0.0,
+        description="Risk manager max single-position concentration percentage",
+    )
+    risk_max_leverage: int = Field(
+        default_factory=lambda: env_int("MAX_LEVERAGE", 3),
+        ge=1,
+        description="Risk manager max leverage",
     )

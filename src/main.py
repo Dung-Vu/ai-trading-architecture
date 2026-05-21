@@ -16,41 +16,16 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import src.config as app_config
 from loguru import logger
-
-
-def setup_logging(log_level: str = "INFO"):
-    """Configure loguru logging."""
-    log_dir = Path(__file__).parent.parent / "logs"
-    log_dir.mkdir(exist_ok=True)
-
-    # Remove default handler
-    logger.remove()
-
-    # Console output
-    logger.add(
-        sys.stderr,
-        level=log_level,
-        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
-    )
-
-    # File output (daily rotation, 30 days retention)
-    logger.add(
-        log_dir / "trading_{time:YYYY-MM-DD}.log",
-        rotation="1 day",
-        retention="30 days",
-        level=log_level,
-        enqueue=True,
-    )
-
-    # Error-only file
-    logger.add(
-        log_dir / "error_{time:YYYY-MM-DD}.log",
-        rotation="1 day",
-        retention="90 days",
-        level="ERROR",
-        enqueue=True,
-    )
+from src.config import get_default_loop_interval_seconds
+from src.logging_config import setup_logging
+from src.runtime_helpers import (
+    add_common_runtime_args,
+    load_runtime_config,
+    run_backtest_from_config,
+)
+from src.shared_utils import normalize_market_symbol
 
 
 def parse_args():
@@ -68,23 +43,12 @@ Examples:
         """,
     )
 
-    parser.add_argument(
-        "--mode",
-        choices=["dryrun", "testnet", "live"],
-        default="dryrun",
-        help="Trading mode (default: dryrun)",
-    )
-    parser.add_argument(
-        "--strategy",
-        choices=["sma_cross", "bbands"],
-        default="sma_cross",
-        help="Trading strategy (default: sma_cross)",
-    )
-    parser.add_argument(
-        "--symbols",
-        nargs="+",
-        default=["BTC/USDT", "ETH/USDT"],
-        help="Trading symbols (default: BTC/USDT ETH/USDT)",
+    add_common_runtime_args(
+        parser,
+        strategy_choices=["sma_cross", "bbands"],
+        strategy_help="Trading strategy (default: sma_cross)",
+        default_strategy="sma_cross",
+        initial_capital_help="Initial capital for dry-run/backtest (default: 10000)",
     )
     parser.add_argument(
         "--backtest",
@@ -106,24 +70,6 @@ Examples:
         "--monitor",
         action="store_true",
         help="Start monitoring bot only",
-    )
-    parser.add_argument(
-        "--config",
-        type=str,
-        default=None,
-        help="Path to settings.yaml config file",
-    )
-    parser.add_argument(
-        "--log-level",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        default="INFO",
-        help="Log level (default: INFO)",
-    )
-    parser.add_argument(
-        "--initial-capital",
-        type=float,
-        default=10000,
-        help="Initial capital for dry-run/backtest (default: 10000)",
     )
 
     return parser.parse_args()
@@ -153,7 +99,7 @@ def run_data_pipeline(config):
     redis_cache = RedisCache(url=pipeline_cfg.redis_url)
 
     # Convert symbols from trading format (BTC/USDT) to cryptofeed format (BTC-USDT)
-    cf_symbols = [s.replace("/", "-") for s in config.trading.symbols]
+    cf_symbols = [normalize_market_symbol(s) for s in config.trading.symbols]
 
     connector = BinanceConnector(
         symbols=cf_symbols,
@@ -178,126 +124,45 @@ def run_data_pipeline(config):
 
 def run_backtest(config):
     """Run backtest with the selected strategy."""
-    from src.strategy.sma_cross import SMACrossStrategy
-    from src.strategy.bbands import BBandsStrategy
-    from src.strategy.backtest import BacktestRunner
-    from src.strategy.metrics import MetricsCalculator
-
-    logger.info("📈 Starting Backtest...")
-
-    # Select strategy
-    if config.strategy.name == "sma_cross":
-        strategy_class = SMACrossStrategy
-    elif config.strategy.name == "bbands":
-        strategy_class = BBandsStrategy
-    else:
-        raise ValueError(f"Unknown strategy: {config.strategy.name}")
-
-    # Date range
-    end_date = datetime.now()
-    start_date = end_date - timedelta(days=getattr(config, "backtest_days", 90))
-
-    logger.info(f"📅 Backtest period: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
-    logger.info(f"📊 Symbol: {config.trading.symbols[0]}")
-    logger.info(f"💰 Initial capital: ${config.trading.initial_capital:,.2f}")
-
-    # Parameters
-    params = {
-        "symbol": config.trading.symbols[0],
-        "sma_fast": config.strategy.sma_fast,
-        "sma_slow": config.strategy.sma_slow,
-        "rsi_period": config.strategy.rsi_period,
-    }
-
-    runner = BacktestRunner(
-        strategy_class=strategy_class,
-        symbol=config.trading.symbols[0],
-        start_date=start_date,
-        end_date=end_date,
-        parameters=params,
-        initial_capital=config.trading.initial_capital,
+    run_backtest_from_config(
+        config,
+        days=getattr(config, "backtest_days", 90),
+        heading="📈 Starting Backtest...",
+        output_path=Path(__file__).parent.parent / "logs" / "backtest_results.html",
+        chart_saved_message="📊 Results chart saved to {path}",
     )
-
-    results = runner.run()
-
-    if results:
-        metrics = MetricsCalculator.summarize(
-            results.get("trades", []),
-            results.get("equity_curve", None),
-        )
-
-        logger.info("=" * 60)
-        logger.info("📊 BACKTEST RESULTS")
-        logger.info("=" * 60)
-        logger.info(f"  Total Return:     {metrics.get('total_return_pct', 0):.2f}%")
-        logger.info(f"  Sharpe Ratio:     {metrics.get('sharpe_ratio', 0):.3f}")
-        logger.info(f"  Max Drawdown:     {metrics.get('max_drawdown_pct', 0):.2f}%")
-        logger.info(f"  Win Rate:         {metrics.get('win_rate_pct', 0):.1f}%")
-        logger.info(f"  Total Trades:     {metrics.get('total_trades', 0)}")
-        logger.info(f"  Profit Factor:    {metrics.get('profit_factor', 0):.2f}")
-        logger.info("=" * 60)
-
-        # Save plot
-        output_path = Path(__file__).parent.parent / "logs" / "backtest_results.html"
-        runner.plot_results(output_path=str(output_path))
-        logger.info(f"📊 Results chart saved to {output_path}")
-    else:
-        logger.warning("⚠️ No backtest results returned")
 
 
 def run_dry_run(config):
-    """Run dry-run trading."""
-    from src.execution.dry_run import DryRunExecutor
-    from src.execution.order_manager import OrderManager
-    from src.risk.risk_engine import RiskEngine
-    from src.risk.kill_switch import KillSwitch
-    from src.monitoring.trading_logger import TradingLogger
-    from src.strategy.sma_cross import SMACrossStrategy
-    from src.strategy.bbands import BBandsStrategy
+    """Run the real dry-run trading bot loop."""
+    config.trading.mode = "dryrun"
+    return run_trading_bot(config)
 
-    logger.info("🤖 Starting Dry-Run Trading...")
-    logger.info(f"💰 Initial capital: ${config.trading.initial_capital:,.2f}")
-    logger.info(f"📊 Symbols: {config.trading.symbols}")
-    logger.info(f"📋 Strategy: {config.strategy.name}")
 
-    # Initialize components
-    trading_logger = TradingLogger()
-    trading_logger.setup()
+def run_trading_bot(config):
+    """Run the real trading bot loop for dryrun/testnet/live modes."""
+    from src.main_full import FullTradingBot
 
-    risk_engine = RiskEngine(
-        max_daily_loss_pct=config.risk.max_daily_loss_pct / 100,
-        max_drawdown_pct=config.risk.max_drawdown_pct / 100,
-        max_position_pct=config.risk.max_position_pct / 100,
-        max_leverage=config.risk.max_leverage,
+    bot = FullTradingBot(
+        config=config,
+        mode=config.trading.mode,
+        strategy=config.strategy.name,
+        symbols=config.trading.symbols,
+        interval=getattr(
+            config.trading,
+            "interval",
+            get_default_loop_interval_seconds(),
+        ),
+        enable_memory=False,
+        enable_news=False,
+        enable_autotune=False,
     )
 
-    kill_switch = KillSwitch()
-    dry_run_executor = DryRunExecutor(initial_balance=config.trading.initial_capital)
+    async def _run() -> None:
+        await bot.setup()
+        await bot.run()
 
-    logger.info("✅ Dry-run ready. Press Ctrl+C to stop...")
-    logger.info("ℹ️  This simulates trading without real orders.")
-
-    # In a full implementation, you'd loop here and call strategy logic
-    # For now, this sets up the infrastructure
-    try:
-        while not kill_switch.is_active():
-            # Trading loop would go here
-            import time
-            time.sleep(60)  # Check every minute
-    except KeyboardInterrupt:
-        logger.info("🛑 Stopping dry-run trading...")
-
-    # Final report
-    portfolio = dry_run_executor.get_portfolio()
-    trades = dry_run_executor.get_trade_log()
-
-    logger.info("=" * 60)
-    logger.info("📊 DRY-RUN SUMMARY")
-    logger.info("=" * 60)
-    logger.info(f"  Total Value:    ${portfolio['total_value']:,.2f}")
-    logger.info(f"  Cash:           ${portfolio['cash']:,.2f}")
-    logger.info(f"  Total Trades:   {len(trades)}")
-    logger.info("=" * 60)
+    asyncio.run(_run())
 
 
 def run_monitor(config):
@@ -321,20 +186,7 @@ def run_monitor(config):
 
 def main():
     args = parse_args()
-
-    # Load config
-    from src.config import load_config
-    config = load_config(config_path=args.config)
-
-    # Override with CLI args
-    config.trading.mode = args.mode
-    config.trading.initial_capital = args.initial_capital
-    config.monitoring.log_level = args.log_level
-
-    if args.symbols:
-        config.trading.symbols = args.symbols
-    if args.strategy:
-        config.strategy.name = args.strategy
+    config = load_runtime_config(args, config_loader=app_config.load_config)
 
     # Setup logging
     setup_logging(log_level=config.monitoring.log_level)
@@ -358,13 +210,12 @@ def main():
     elif config.trading.mode == "dryrun":
         run_dry_run(config)
     elif config.trading.mode == "testnet":
-        # Testnet uses similar logic but with real CCXT connection
         logger.info("🔗 Connecting to Binance Testnet...")
-        run_dry_run(config)  # TODO: wire up real testnet execution
+        run_trading_bot(config)
     elif config.trading.mode == "live":
         logger.warning("⚠️ LIVE trading mode — use at your own risk!")
         logger.warning("⚠️ Ensure Risk Engine and Kill Switch are configured!")
-        run_dry_run(config)  # TODO: wire up real live execution
+        run_trading_bot(config)
 
 
 if __name__ == "__main__":

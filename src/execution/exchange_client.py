@@ -7,9 +7,11 @@ from typing import Any
 import ccxt
 from loguru import logger
 
+from src.config import get_default_exchange_name
+
 
 class ExchangeClient:
-    """Wrapper around CCXT Binance exchange for spot trading."""
+    """Wrapper around a configurable CCXT exchange for spot trading."""
 
     def __init__(
         self,
@@ -17,6 +19,7 @@ class ExchangeClient:
         api_secret: str = "",
         testnet: bool = False,
         rate_limit_ms: int = 50,
+        exchange_name: str | None = None,
     ) -> None:
         """Initialize exchange client.
 
@@ -30,10 +33,11 @@ class ExchangeClient:
         self._api_secret = api_secret
         self._testnet = testnet
         self._rate_limit_ms = rate_limit_ms
-        self._exchange: ccxt.binance | None = None
+        self._exchange_name = exchange_name or get_default_exchange_name()
+        self._exchange: Any | None = None
 
     @property
-    def exchange(self) -> ccxt.binance:
+    def exchange(self) -> Any:
         """Return the underlying CCXT exchange instance."""
         if self._exchange is None:
             raise RuntimeError("Exchange not connected. Call connect() first.")
@@ -45,7 +49,7 @@ class ExchangeClient:
         return self._exchange is not None
 
     def connect(self) -> None:
-        """Create and configure the CCXT Binance exchange instance."""
+        """Create and configure the underlying CCXT exchange instance."""
         config: dict[str, Any] = {
             "apiKey": self._api_key,
             "secret": self._api_secret,
@@ -56,13 +60,19 @@ class ExchangeClient:
             },
         }
 
-        self._exchange = ccxt.binance(config)
+        exchange_factory = getattr(ccxt, self._exchange_name, None)
+        if exchange_factory is None:
+            raise ValueError(f"Unsupported CCXT exchange: {self._exchange_name}")
+
+        self._exchange = exchange_factory(config)
 
         if self._testnet:
-            self._exchange.set_sandbox_mode(True)
-            logger.info("Connected to Binance testnet (sandbox mode)")
+            sandbox_mode = getattr(self._exchange, "set_sandbox_mode", None)
+            if callable(sandbox_mode):
+                sandbox_mode(True)
+            logger.info(f"Connected to {self._exchange_name} testnet (sandbox mode)")
         else:
-            logger.info("Connected to Binance mainnet")
+            logger.info(f"Connected to {self._exchange_name} mainnet")
 
     def fetch_ticker(self, symbol: str) -> dict:
         """Fetch current ticker for a symbol.
@@ -99,11 +109,10 @@ class ExchangeClient:
         """Fetch account balance.
 
         Returns:
-            Dictionary with free, used, and total balances per asset.
+            Raw CCXT balance dictionary with free, used, and total balances.
         """
         logger.debug("Fetching account balance")
         raw = self.exchange.fetch_balance()
-        # Return only non-zero balances for readability
         return raw
 
     def fetch_open_orders(self, symbol: str | None = None) -> list[dict]:

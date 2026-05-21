@@ -19,12 +19,14 @@ Usage:
     >>> kg.add_pattern("RSI < 30", "BUY", "win", 0.7)
 """
 
+from .interfaces import TradeMemoryInterface
 from .trade_memory import TradeMemory
 from .weekly_review import WeeklyReviewer
 from .mem0_memory import Mem0Memory
 from .knowledge_graph import KnowledgeGraph
 
 __all__ = [
+    "TradeMemoryInterface",
     "TradeMemory",
     "WeeklyReviewer",
     "Mem0Memory",

@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import asyncio
-import logging
 from typing import TYPE_CHECKING, Any
 
-from telegram import Update
+from loguru import logger
+from telegram import Bot, Update
 from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
@@ -17,9 +16,6 @@ from telegram.ext import (
 
 if TYPE_CHECKING:
     from .trading_logger import TradingLogger
-
-
-logger = logging.getLogger(__name__)
 
 
 class TelegramBot:
@@ -50,6 +46,7 @@ class TelegramBot:
         self._chat_id = chat_id
         self._logger = trading_logger
         self._application: Application | None = None
+        self._bot: Bot | None = None
 
         # Trading state shared with the rest of the system
         self._mode: str = "dryrun"
@@ -211,12 +208,14 @@ class TelegramBot:
         parse_mode : str
             "HTML" (default) or "Markdown"
         """
-        if not self._application:
-            logger.warning("Cannot send alert — bot is not running.")
-            return
-
         pm = ParseMode.HTML if parse_mode == "HTML" else ParseMode.MARKDOWN
-        await self._application.bot.send_message(
+
+        bot = self._application.bot if self._application else self._bot
+        if bot is None:
+            self._bot = Bot(token=self._bot_token)
+            bot = self._bot
+
+        await bot.send_message(
             chat_id=self._chat_id,
             text=message,
             parse_mode=pm,
@@ -229,6 +228,9 @@ class TelegramBot:
         quantity: float,
         price: float,
         pnl: float | None = None,
+        strategy: str = "SMA Cross",
+        ai_confidence: float | None = None,
+        mode: str | None = None,
     ) -> None:
         """Send a formatted trade-execution alert.
 
@@ -244,6 +246,12 @@ class TelegramBot:
             Execution price
         pnl : float | None
             Realized P&L (optional)
+        strategy : str
+            Strategy label to include in the alert.
+        ai_confidence : float | None
+            Optional AI confidence to include in the alert.
+        mode : str | None
+            Optional trading mode label.
         """
         from .alert_formatter import AlertFormatter
 
@@ -253,6 +261,9 @@ class TelegramBot:
             quantity=quantity,
             price=price,
             pnl=pnl,
+            strategy=strategy,
+            ai_confidence=ai_confidence,
+            mode=mode,
         )
         await self.send_alert(msg)
 

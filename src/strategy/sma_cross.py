@@ -1,5 +1,7 @@
 """SMA crossover + RSI filter strategy."""
 
+from typing import Literal
+
 from loguru import logger
 from lumibot.entities import Asset
 
@@ -185,7 +187,7 @@ class SMACrossStrategy(BaseStrategy):
 
     def generate_signal(
         self, price: float, indicators: dict, market_data: dict
-    ) -> str:
+    ) -> Literal["BUY", "SELL", "HOLD"]:
         """Generate dual SMA crossover strategy with RSI filter signal."""
         rsi = indicators.get("rsi")
         sma_fast = indicators.get("sma_fast")

@@ -64,6 +64,11 @@ ignore = ["E501"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "-v --tb=short"
+filterwarnings = [
+    "ignore:'future.no_silent_downcasting' is deprecated.*:pandas.errors.Pandas4Warning:lumibot\\.entities\\.data",
+    "ignore:'future.no_silent_downcasting' is deprecated.*:pandas.errors.Pandas4Warning:lumibot\\.entities\\.data_polars",
+    "ignore:websockets\\.legacy is deprecated.*:DeprecationWarning:websockets\\.legacy",
+]
 
 [tool.mypy]
 python_version = "3.11"

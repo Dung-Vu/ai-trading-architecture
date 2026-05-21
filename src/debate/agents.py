@@ -21,6 +21,7 @@ from .prompts import (
     DEVIL_SYSTEM_PROMPT,
     JUDGE_SYSTEM_PROMPT,
     RISK_MANAGER_SYSTEM_PROMPT,
+    build_risk_manager_system_prompt,
 )
 
 
@@ -103,6 +104,23 @@ class BaseAgent(ABC):
             bear_rebuttal=raw.get("bear_rebuttal"),
         )
 
+    @staticmethod
+    def _format_market_data(data: dict[str, Any]) -> str:
+        """Format market data into a readable string."""
+        lines = []
+        for key, value in data.items():
+            if isinstance(value, dict):
+                lines.append(f"\n{key.upper()}:")
+                for nested_key, nested_value in value.items():
+                    lines.append(f"  {nested_key}: {nested_value}")
+            elif isinstance(value, list):
+                lines.append(f"\n{key.upper()}:")
+                for item in value:
+                    lines.append(f"  - {item}")
+            else:
+                lines.append(f"{key}: {value}")
+        return "\n".join(lines)
+
 
 # ─── BullAgent ────────────────────────────────────────────────────────
 class BullAgent(BaseAgent):
@@ -155,24 +173,6 @@ class BullAgent(BaseAgent):
         messages.append({"role": "user", "content": "\n".join(user_parts)})
         return messages
 
-    @staticmethod
-    def _format_market_data(data: dict[str, Any]) -> str:
-        """Format market data into a readable string."""
-        lines = []
-        for key, value in data.items():
-            if isinstance(value, dict):
-                lines.append(f"\n{key.upper()}:")
-                for k, v in value.items():
-                    lines.append(f"  {k}: {v}")
-            elif isinstance(value, list):
-                lines.append(f"\n{key.upper()}:")
-                for item in value:
-                    lines.append(f"  - {item}")
-            else:
-                lines.append(f"{key}: {value}")
-        return "\n".join(lines)
-
-
 # ─── BearAgent ────────────────────────────────────────────────────────
 class BearAgent(BaseAgent):
     """Bearish trading analyst — finds reasons to SELL."""
@@ -195,7 +195,7 @@ class BearAgent(BaseAgent):
 
         user_parts: list[str] = []
         user_parts.append("Here is the current market data to analyze:")
-        user_parts.append(BullAgent._format_market_data(market_data))
+        user_parts.append(self._format_market_data(market_data))
 
         if context:
             if context.get("devil_rebuttal"):
@@ -247,7 +247,7 @@ class DevilsAdvocate(BaseAgent):
 
         user_parts: list[str] = []
         user_parts.append("Here is the current market data:")
-        user_parts.append(BullAgent._format_market_data(market_data))
+        user_parts.append(self._format_market_data(market_data))
 
         if context:
             bull_arg = context.get("bull_argument", "")
@@ -303,7 +303,7 @@ class JudgeAgent(BaseAgent):
 
         user_parts: list[str] = []
         user_parts.append("Here is the current market data:")
-        user_parts.append(BullAgent._format_market_data(market_data))
+        user_parts.append(self._format_market_data(market_data))
 
         if context:
             rounds = context.get("debate_rounds", [])
@@ -332,9 +332,17 @@ class RiskManagerAgent(BaseAgent):
     role = "risk_manager"
 
     def __init__(
-        self, llm_client: LLMClient, temperature: float | None = None
+        self,
+        llm_client: LLMClient,
+        temperature: float | None = None,
+        risk_config: Any | None = None,
     ) -> None:
-        super().__init__(llm_client, RISK_MANAGER_SYSTEM_PROMPT, temperature)
+        system_prompt = (
+            build_risk_manager_system_prompt(risk_config)
+            if risk_config is not None
+            else RISK_MANAGER_SYSTEM_PROMPT
+        )
+        super().__init__(llm_client, system_prompt, temperature)
 
     def build_messages(
         self,
@@ -347,7 +355,7 @@ class RiskManagerAgent(BaseAgent):
 
         user_parts: list[str] = []
         user_parts.append("Here is the current market data:")
-        user_parts.append(BullAgent._format_market_data(market_data))
+        user_parts.append(self._format_market_data(market_data))
 
         if context:
             judge_decision = context.get("judge_decision", {})

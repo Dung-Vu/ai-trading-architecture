@@ -12,9 +12,9 @@ Usage:
     >>> from src.memory import TradeMemory, WeeklyReviewer
     >>> async with TradeMemory() as memory:
     ...     reviewer = WeeklyReviewer(memory)
-    ...     report = reviewer.generate_report()
+    ...     report = await reviewer.generate_report()
     ...     reviewer.save_report(report)
-    ...     insights = reviewer.extract_insights()
+    ...     insights = await reviewer.extract_insights()
 """
 
 from __future__ import annotations
@@ -25,6 +25,16 @@ from pathlib import Path
 from typing import Any
 
 from loguru import logger
+
+from .interfaces import TradeMemoryInterface
+from .review.sections import (
+    build_action_items_section,
+    build_best_worst_trades_section,
+    build_pattern_analysis_section,
+    build_performance_summary_section,
+    build_reflection_section,
+    build_strategy_comparison_section,
+)
 
 
 class WeeklyReviewer:
@@ -37,14 +47,14 @@ class WeeklyReviewer:
 
     def __init__(
         self,
-        trade_memory: Any,  # TradeMemory instance
+        trade_memory: TradeMemoryInterface,
         report_dir: str = "docs/weekly_reviews",
     ) -> None:
         """
         Initialize the weekly reviewer.
 
         Args:
-            trade_memory: TradeMemory instance for querying trade data.
+            trade_memory: TradeMemoryInterface for querying trade data.
             report_dir: Directory to save reports.
         """
         self._memory = trade_memory
@@ -53,7 +63,7 @@ class WeeklyReviewer:
 
     # ─── Report Generation ─────────────────────────────────────────────
 
-    def generate_report(
+    async def generate_report(
         self,
         end_date: datetime | None = None,
         lookback_days: int = 7,
@@ -96,27 +106,27 @@ class WeeklyReviewer:
         lines.append("")
 
         # Section 1: Performance Summary
-        lines.extend(self._section_performance_summary(start_date, end_date))
+        lines.extend(await build_performance_summary_section(self._memory, start_date, end_date))
         lines.append("")
 
         # Section 2: Best & Worst Trades
-        lines.extend(self._section_best_worst_trades(start_date, end_date))
+        lines.extend(await build_best_worst_trades_section(self._memory, start_date, end_date))
         lines.append("")
 
         # Section 3: Strategy Comparison
-        lines.extend(self._section_strategy_comparison(start_date, end_date))
+        lines.extend(await build_strategy_comparison_section(self._memory, start_date, end_date))
         lines.append("")
 
         # Section 4: Pattern Analysis
-        lines.extend(self._section_pattern_analysis())
+        lines.extend(await build_pattern_analysis_section(self._memory))
         lines.append("")
 
         # Section 5: Reflection
-        lines.extend(self._section_reflection(start_date, end_date))
+        lines.extend(await build_reflection_section(self._memory, start_date, end_date))
         lines.append("")
 
         # Section 6: Action Items
-        lines.extend(self._section_action_items(start_date, end_date))
+        lines.extend(await build_action_items_section(self._memory, start_date, end_date))
         lines.append("")
         lines.append("---")
         lines.append("")
@@ -126,439 +136,6 @@ class WeeklyReviewer:
         logger.info(f"[WeeklyReviewer] Report generated ({len(lines)} lines)")
         return report
 
-    async def _section_performance_summary(
-        self, start_date: datetime, end_date: datetime
-    ) -> list[str]:
-        """Generate the performance summary section."""
-        from .trade_memory import PerformanceSummary
-
-        try:
-            summary: PerformanceSummary = await self._memory.get_performance_summary(
-                start_date=start_date, end_date=end_date
-            )
-        except Exception as exc:
-            logger.warning(f"Failed to get performance summary: {exc}")
-            return ["## 📈 Performance Summary\n\n*No data available for this period.*"]
-
-        emoji = "🟢" if summary.total_pnl >= 0 else "🔴"
-
-        lines = [
-            "## 📈 Performance Summary",
-            "",
-            f"| Metric | Value |",
-            f"|--------|-------|",
-            f"| {emoji} **Total P&L** | ${summary.total_pnl:+,.2f} |",
-            f"| 📊 **Win Rate** | {summary.win_rate:.1f}% ({summary.winning_trades}W / {summary.losing_trades}L) |",
-            f"| 📈 **Sharpe Ratio** | {summary.sharpe_ratio:.3f} |",
-            f"| 📉 **Max Drawdown** | {summary.max_drawdown:.1f}% |",
-            f"| 💰 **Avg P&L/Trade** | ${summary.avg_pnl:+,.2f} |",
-            f"| 🏆 **Best Trade** | ${summary.best_trade:+,.2f} |",
-            f"| 💔 **Worst Trade** | ${summary.worst_trade:+,.2f} |",
-            f"| ⚖️ **Profit Factor** | {summary.profit_factor:.2f} |",
-            f"| 📝 **Total Trades** | {summary.total_trades} |",
-            "",
-        ]
-
-        # Commentary
-        if summary.total_trades == 0:
-            lines.append("*No closing trades in this period.*")
-        else:
-            if summary.win_rate >= 60:
-                lines.append("✅ Win rate is strong (>60%).")
-            elif summary.win_rate >= 45:
-                lines.append("⚠️ Win rate is moderate. Consider refining entry signals.")
-            else:
-                lines.append("🔴 Win rate is below 45%. Significant strategy review needed.")
-
-            if summary.sharpe_ratio >= 1.5:
-                lines.append("✅ Risk-adjusted returns are excellent (Sharpe > 1.5).")
-            elif summary.sharpe_ratio >= 1.0:
-                lines.append("⚠️ Risk-adjusted returns are decent (Sharpe > 1.0).")
-            else:
-                lines.append("🔴 Risk-adjusted returns need improvement (Sharpe < 1.0).")
-
-        return lines
-
-    async def _section_best_worst_trades(
-        self, start_date: datetime, end_date: datetime
-    ) -> list[str]:
-        """Generate best and worst trades section."""
-        try:
-            history = await self._memory.get_trade_history(
-                start_date=start_date, end_date=end_date, limit=500
-            )
-        except Exception as exc:
-            logger.warning(f"Failed to get trade history: {exc}")
-            return ["## 🏆 Best & Worst Trades\n\n*No trade data available.*"]
-
-        if not history:
-            return ["## 🏆 Best & Worst Trades\n\n*No trades in this period.*"]
-
-        # Find SELL trades with PnL
-        pnl_trades = [t for t in history if t.get("side") == "SELL" and t.get("pnl", 0) != 0]
-
-        if not pnl_trades:
-            return ["## 🏆 Best & Worst Trades\n\n*No closing trades with realized P&L.*"]
-
-        best = max(pnl_trades, key=lambda t: t.get("pnl", 0))
-        worst = min(pnl_trades, key=lambda t: t.get("pnl", 0))
-
-        lines = [
-            "## 🏆 Best & Worst Trades",
-            "",
-            "### Best Trade",
-            "",
-            f"- **Symbol:** {best.get('symbol', 'N/A')}",
-            f"- **Side:** {best.get('side', 'N/A')} {best.get('quantity', 0)} @ ${best.get('price', 0):,.2f}",
-            f"- **P&L:** 🟢 ${best.get('pnl', 0):+.2f} ({best.get('pnl_pct', 0):+.1f}%)",
-            f"- **Strategy:** {best.get('strategy', 'N/A')}",
-            f"- **AI Confidence:** {best.get('ai_confidence', 'N/A')}",
-            "",
-            "### Worst Trade",
-            "",
-            f"- **Symbol:** {worst.get('symbol', 'N/A')}",
-            f"- **Side:** {worst.get('side', 'N/A')} {worst.get('quantity', 0)} @ ${worst.get('price', 0):,.2f}",
-            f"- **P&L:** 🔴 ${worst.get('pnl', 0):+.2f} ({worst.get('pnl_pct', 0):+.1f}%)",
-            f"- **Strategy:** {worst.get('strategy', 'N/A')}",
-            f"- **AI Confidence:** {worst.get('ai_confidence', 'N/A')}",
-            "",
-        ]
-
-        # Add analysis
-        best_conf = best.get("ai_confidence")
-        worst_conf = worst.get("ai_confidence")
-
-        if best_conf and worst_conf:
-            if best_conf > worst_conf:
-                lines.append("📌 AI confidence aligned with outcomes (high confidence on wins).")
-            else:
-                lines.append("⚠️ AI confidence was HIGHER on the losing trade than the winning trade. Review confidence calibration.")
-
-        return lines
-
-    async def _section_strategy_comparison(
-        self, start_date: datetime, end_date: datetime
-    ) -> list[str]:
-        """Generate strategy comparison section."""
-        try:
-            strat_perf = await self._memory.get_strategy_performance(
-                start_date=start_date, end_date=end_date
-            )
-        except Exception as exc:
-            logger.warning(f"Failed to get strategy performance: {exc}")
-            return ["## ⚔️ Strategy Comparison\n\n*No strategy data available.*"]
-
-        if not strat_perf:
-            return ["## ⚔️ Strategy Comparison\n\n*No strategies with closing trades in this period.*"]
-
-        lines = [
-            "## ⚔️ Strategy Comparison",
-            "",
-        ]
-
-        # Sort by total P&L
-        sorted_strats = sorted(
-            strat_perf.items(),
-            key=lambda x: x[1].total_pnl,
-            reverse=True,
-        )
-
-        lines.append("| Strategy | Trades | Win Rate | Total P&L | Avg P&L | Sharpe |")
-        lines.append("|----------|--------|----------|-----------|---------|--------|")
-
-        for name, perf in sorted_strats:
-            emoji = "🟢" if perf.total_pnl >= 0 else "🔴"
-            lines.append(
-                f"| {emoji} {name} "
-                f"| {perf.total_trades} "
-                f"| {perf.win_rate:.1f}% "
-                f"| ${perf.total_pnl:+,.2f} "
-                f"| ${perf.avg_pnl:+,.2f} "
-                f"| {perf.sharpe_ratio:.2f} |"
-            )
-
-        lines.append("")
-
-        # Winner commentary
-        if sorted_strats:
-            winner_name, winner_perf = sorted_strats[0]
-            lines.append(
-                f"🏆 **{winner_name}** was the top-performing strategy "
-                f"this week with ${winner_perf.total_pnl:+,.2f} P&L."
-            )
-            lines.append("")
-
-        return lines
-
-    async def _section_pattern_analysis(self) -> list[str]:
-        """Generate pattern analysis section."""
-        try:
-            patterns = await self._memory.get_trade_patterns()
-        except Exception as exc:
-            logger.warning(f"Failed to get patterns: {exc}")
-            return ["## 🔍 Pattern Analysis\n\n*Unable to analyze patterns.*"]
-
-        lines = [
-            "## 🔍 Pattern Analysis",
-            "",
-        ]
-
-        # Symbol + Side patterns
-        sp = patterns.get("symbol_side_patterns", [])
-        if sp:
-            lines.append("### Symbol + Side Performance")
-            lines.append("")
-            for p in sp:
-                emoji = "🟢" if p["win_rate"] >= 55 else "🔴" if p["win_rate"] < 40 else "⚠️"
-                lines.append(
-                    f"- {emoji} **{p['symbol']} {p['side']}**: "
-                    f"{p['win_rate']}% win rate ({p['total_trades']} trades), "
-                    f"avg P&L ${p['avg_pnl']:+,.2f}"
-                )
-            lines.append("")
-
-        # Time of day patterns
-        tp = patterns.get("time_of_day_patterns", [])
-        if tp:
-            lines.append("### Time-of-Day Patterns (UTC)")
-            lines.append("")
-            for p in sorted(tp, key=lambda x: x["avg_pnl"], reverse=True)[:5]:
-                emoji = "🟢" if p["avg_pnl"] > 0 else "🔴"
-                lines.append(
-                    f"- {emoji} **{p['hour_utc']:02d}:00 UTC**: "
-                    f"{p['win_rate']}% win rate, avg P&L ${p['avg_pnl']:+,.2f}"
-                )
-            lines.append("")
-
-        # Confidence correlation
-        cc = patterns.get("confidence_correlation", {})
-        if cc:
-            lines.append("### AI Confidence Correlation")
-            lines.append("")
-            lines.append(
-                f"- High confidence (≥70%) avg P&L: ${cc.get('high_confidence_avg_pnl', 0):+.2f} "
-                f"({cc.get('high_confidence_count', 0)} trades)"
-            )
-            lines.append(
-                f"- Low confidence (<70%) avg P&L: ${cc.get('low_confidence_avg_pnl', 0):+.2f} "
-                f"({cc.get('low_confidence_count', 0)} trades)"
-            )
-            lines.append("")
-
-        return lines
-
-    async def _section_reflection(
-        self, start_date: datetime, end_date: datetime
-    ) -> list[str]:
-        """Generate the reflective analysis section."""
-        try:
-            summary = await self._memory.get_performance_summary(
-                start_date=start_date, end_date=end_date
-            )
-            patterns = await self._memory.get_trade_patterns()
-        except Exception as exc:
-            logger.warning(f"Failed to get reflection data: {exc}")
-            return ["## 🤔 Reflection\n\n*Insufficient data for reflection.*"]
-
-        lines = [
-            "## 🤔 Reflection",
-            "",
-        ]
-
-        # What went well
-        lines.append("### ✅ What Went Well?")
-        lines.append("")
-
-        if summary.total_trades > 0:
-            if summary.win_rate >= 55:
-                lines.append(
-                    f"- Overall win rate of {summary.win_rate:.1f}% is solid. "
-                    f"The trading approach is working."
-                )
-
-            if summary.profit_factor > 1.5:
-                lines.append(
-                    f"- Profit factor of {summary.profit_factor:.2f} means "
-                    f"we're making more on winners than losing on losers."
-                )
-
-            if summary.best_trade > 0:
-                lines.append(
-                    f"- Best trade earned ${summary.best_trade:+,.2f}. "
-                    f"The strategy can capture meaningful moves."
-                )
-
-            # Check positive patterns
-            good_patterns = [
-                p for p in patterns.get("symbol_side_patterns", [])
-                if p["win_rate"] >= 60 and p["total_trades"] >= 5
-            ]
-            if good_patterns:
-                symbols = ", ".join(f"{p['symbol']} {p['side']}" for p in good_patterns)
-                lines.append(
-                    f"- High-win-rate patterns detected: {symbols}. "
-                    f"These setups should be prioritized."
-                )
-        else:
-            lines.append("- No completed trades to evaluate. Focus on getting more execution data.")
-
-        lines.append("")
-
-        # What went poorly
-        lines.append("### ❌ What Went Poorly?")
-        lines.append("")
-
-        if summary.total_trades > 0:
-            if summary.win_rate < 45:
-                lines.append(
-                    f"- Win rate of {summary.win_rate:.1f}% is concerning. "
-                    f"Entry signals need refinement."
-                )
-
-            if summary.max_drawdown > 10:
-                lines.append(
-                    f"- Max drawdown of {summary.max_drawdown:.1f}% is significant. "
-                    f"Consider tighter stop-losses or smaller position sizes."
-                )
-
-            if summary.sharpe_ratio < 0.5:
-                lines.append(
-                    f"- Sharpe ratio of {summary.sharpe_ratio:.2f} is poor. "
-                    f"Risk-adjusted returns need improvement."
-                )
-
-            # Bad patterns
-            bad_patterns = [
-                p for p in patterns.get("symbol_side_patterns", [])
-                if p["win_rate"] < 35 and p["total_trades"] >= 5
-            ]
-            if bad_patterns:
-                symbols = ", ".join(f"{p['symbol']} {p['side']}" for p in bad_patterns)
-                lines.append(
-                    f"- Low-win-rate patterns: {symbols}. "
-                    f"These setups should be avoided or reworked."
-                )
-
-            # Confidence mismatch
-            cc = patterns.get("confidence_correlation", {})
-            if cc and cc.get("high_confidence_avg_pnl", 0) < cc.get("low_confidence_avg_pnl", 0):
-                lines.append(
-                    "- AI confidence is INVERSELY correlated with outcomes. "
-                    "High confidence trades performed WORSE than low confidence ones. "
-                    "This suggests the AI is overconfident on bad setups."
-                )
-        else:
-            lines.append("- No trades yet to evaluate losses. This is the primary gap.")
-
-        lines.append("")
-
-        # What to change
-        lines.append("### 🔄 What to Change?")
-        lines.append("")
-
-        if summary.total_trades > 0:
-            changes_made = False
-
-            if summary.win_rate < 50:
-                lines.append(
-                    "- **Raise entry threshold:** Require higher AI confidence "
-                    "(≥70%) or stricter technical conditions before entering trades."
-                )
-                changes_made = True
-
-            if summary.max_drawdown > 8:
-                lines.append(
-                    "- **Tighten risk limits:** Reduce max position size or "
-                    "implement trailing stops to limit drawdowns."
-                )
-                changes_made = True
-
-            cc = patterns.get("confidence_correlation", {})
-            if cc and cc.get("high_confidence_avg_pnl", 0) < 0:
-                lines.append(
-                    "- **Calibrate AI confidence:** The AI is overconfident on "
-                    "losing trades. DSPy optimization should focus on better "
-                    "confidence calibration."
-                )
-                changes_made = True
-
-            if not changes_made:
-                lines.append(
-                    "- Performance is generally acceptable. Focus on incremental "
-                    "improvements rather than major changes."
-                )
-        else:
-            lines.append(
-                "- No data-driven changes yet. Focus on executing more trades "
-                "to build a statistical foundation."
-            )
-
-        lines.append("")
-
-        return lines
-
-    async def _section_action_items(
-        self, start_date: datetime, end_date: datetime
-    ) -> list[str]:
-        """Generate action items section."""
-        try:
-            summary = await self._memory.get_performance_summary(
-                start_date=start_date, end_date=end_date
-            )
-        except Exception:
-            return ["## 📋 Action Items\n\n*Insufficient data for action items.*"]
-
-        lines = [
-            "## 📋 Action Items",
-            "",
-        ]
-
-        priority = 1
-
-        if summary.total_trades == 0:
-            lines.append(
-                f"{priority}. **Priority:** Get more trade data. "
-                "No meaningful analysis possible without completed trades."
-            )
-            return lines
-
-        if summary.win_rate < 45:
-            lines.append(
-                f"{priority}. **Priority: HIGH** — Win rate below 45%. "
-                f"Review entry signals and consider adding confirmation filters."
-            )
-            priority += 1
-
-        if summary.max_drawdown > 10:
-            lines.append(
-                f"{priority}. **Priority: HIGH** — Max drawdown {summary.max_drawdown:.1f}%. "
-                "Reduce position sizes or tighten stop-losses."
-            )
-            priority += 1
-
-        if summary.sharpe_ratio < 1.0 and summary.total_trades > 10:
-            lines.append(
-                f"{priority}. **Priority: MEDIUM** — Sharpe ratio below 1.0. "
-                "DSPy optimization should focus on improving risk-adjusted returns."
-            )
-            priority += 1
-
-        if summary.profit_factor < 1.2:
-            lines.append(
-                f"{priority}. **Priority: MEDIUM** — Profit factor below 1.2. "
-                "Either cut losers faster or let winners run longer."
-            )
-            priority += 1
-
-        if priority == 1:
-            lines.append(
-                "✅ No critical issues detected. Continue current strategy and "
-                "monitor for regression."
-            )
-
-        lines.append("")
-
-        return lines
 
     # ─── Report Saving ─────────────────────────────────────────────────
 

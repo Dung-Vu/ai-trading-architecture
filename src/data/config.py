@@ -1,14 +1,30 @@
-"""Data pipeline configuration using Pydantic for validation."""
+"""Data pipeline configuration with lightweight runtime validation."""
 
 from __future__ import annotations
 
-import os
+from dataclasses import dataclass, field
 
-from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings
+from src.config import (
+    env_float,
+    env_int,
+    env_str,
+    get_data_channels,
+    get_data_symbols,
+    get_default_questdb_http_addr,
+    get_default_redis_url,
+)
 
 
-class DataConfig(BaseSettings):
+_VALID_CHANNELS = {"TRADES", "CANDLES", "TICKER", "L2_BOOK", "L3_BOOK"}
+_VALID_INTERVALS = {
+    "1m", "3m", "5m", "15m", "30m",
+    "1h", "2h", "4h", "6h", "8h", "12h",
+    "1d", "3d", "1w", "1M",
+}
+
+
+@dataclass(slots=True)
+class DataConfig:
     """Configuration for the data pipeline module.
 
     Parameters
@@ -31,91 +47,63 @@ class DataConfig(BaseSettings):
         Maximum acceptable bid-ask spread as a percentage of mid price.
     """
 
-    symbols: list[str] = Field(
-        default=["BTC-USDT", "ETH-USDT", "SOL-USDT"],
-        description="Trading symbol pairs to subscribe to",
-    )
-    channels: list[str] = Field(
-        default=["TRADES", "CANDLES", "TICKER"],
-        description="Cryptofeed channels to subscribe to",
-    )
-    candle_interval: str = Field(
-        default="1m",
-        description="Candlestick interval (e.g. '1m', '5m')",
-    )
-    redis_url: str = Field(
-        default="redis://localhost:6379",
-        description="Redis connection URL",
-    )
-    questdb_addr: str = Field(
-        default="localhost:9000",
-        description="QuestDB sender address",
-    )
-    max_latency_ms: int = Field(
-        default=5000,
-        description="Maximum acceptable message latency (ms)",
-    )
-    z_score_threshold: float = Field(
-        default=3.0,
-        description="Z-score threshold for price spike detection",
-    )
-    max_spread_pct: float = Field(
-        default=1.0,
-        description="Maximum bid-ask spread (% of mid price)",
-    )
+    symbols: list[str] = field(default_factory=get_data_symbols)
+    channels: list[str] = field(default_factory=get_data_channels)
+    candle_interval: str = "1m"
+    redis_url: str = field(default_factory=get_default_redis_url)
+    questdb_addr: str = field(default_factory=get_default_questdb_http_addr)
+    max_latency_ms: int = 5000
+    z_score_threshold: float = 3.0
+    max_spread_pct: float = 1.0
 
-    @field_validator("symbols")
-    @classmethod
-    def validate_symbols(cls, v: list[str]) -> list[str]:
-        if not v:
+    def __post_init__(self) -> None:
+        self.symbols = self.validate_symbols(list(self.symbols))
+        self.channels = self.validate_channels(list(self.channels))
+        self.candle_interval = self.validate_interval(str(self.candle_interval))
+        self.max_latency_ms = self.validate_latency(int(self.max_latency_ms))
+        self.z_score_threshold = self.validate_z_score(float(self.z_score_threshold))
+        self.max_spread_pct = self.validate_spread(float(self.max_spread_pct))
+
+    @staticmethod
+    def validate_symbols(value: list[str]) -> list[str]:
+        if not value:
             raise ValueError("symbols list cannot be empty")
-        return v
+        return value
 
-    @field_validator("channels")
-    @classmethod
-    def validate_channels(cls, v: list[str]) -> list[str]:
-        valid = {"TRADES", "CANDLES", "TICKER", "L2_BOOK", "L3_BOOK"}
-        for ch in v:
-            if ch not in valid:
+    @staticmethod
+    def validate_channels(value: list[str]) -> list[str]:
+        for channel in value:
+            if channel not in _VALID_CHANNELS:
                 raise ValueError(
-                    f"Invalid channel '{ch}'. Must be one of {valid}"
+                    f"Invalid channel '{channel}'. Must be one of {_VALID_CHANNELS}"
                 )
-        return v
+        return value
 
-    @field_validator("candle_interval")
-    @classmethod
-    def validate_interval(cls, v: str) -> str:
-        valid_intervals = {
-            "1m", "3m", "5m", "15m", "30m",
-            "1h", "2h", "4h", "6h", "8h", "12h",
-            "1d", "3d", "1w", "1M",
-        }
-        if v not in valid_intervals:
+    @staticmethod
+    def validate_interval(value: str) -> str:
+        if value not in _VALID_INTERVALS:
             raise ValueError(
-                f"Invalid candle_interval '{v}'. Must be one of {valid_intervals}"
+                f"Invalid candle_interval '{value}'. Must be one of {_VALID_INTERVALS}"
             )
-        return v
+        return value
 
-    @field_validator("max_latency_ms")
-    @classmethod
-    def validate_latency(cls, v: int) -> int:
-        if v <= 0:
+    @staticmethod
+    def validate_latency(value: int) -> int:
+        if value <= 0:
             raise ValueError("max_latency_ms must be positive")
-        return v
+        return value
 
-    @field_validator("z_score_threshold")
-    @classmethod
-    def validate_z_score(cls, v: float) -> float:
-        if v <= 0:
+    @staticmethod
+    def validate_z_score(value: float) -> float:
+        if value <= 0:
             raise ValueError("z_score_threshold must be positive")
-        return v
+        return value
 
-    @field_validator("max_spread_pct")
-    @classmethod
-    def validate_spread(cls, v: float) -> float:
-        if v <= 0:
+    @staticmethod
+    def validate_spread(value: float) -> float:
+        if value <= 0:
             raise ValueError("max_spread_pct must be positive")
-        return v
+        return value
 
     @classmethod
     def load_from_env(cls) -> "DataConfig":
@@ -125,8 +113,8 @@ class DataConfig(BaseSettings):
             DATA_SYMBOLS       - Comma-separated symbols (e.g. "BTC-USDT,ETH-USDT")
             DATA_CHANNELS      - Comma-separated channels (e.g. "TRADES,CANDLES,TICKER")
             DATA_CANDLE_INTERVAL
-            DATA_REDIS_URL
-            DATA_QUESTDB_ADDR
+            REDIS_URL / DATA_REDIS_URL
+            QUESTDB_HTTP_ADDR / DATA_QUESTDB_ADDR
             DATA_MAX_LATENCY_MS
             DATA_Z_SCORE_THRESHOLD
             DATA_MAX_SPREAD_PCT
@@ -136,23 +124,13 @@ class DataConfig(BaseSettings):
         DataConfig
             Validated configuration instance.
         """
-        env_map: dict[str, str] = {}
-
-        if syms := os.getenv("DATA_SYMBOLS"):
-            env_map["symbols"] = [s.strip() for s in syms.split(",") if s.strip()]
-        if chs := os.getenv("DATA_CHANNELS"):
-            env_map["channels"] = [c.strip() for c in chs.split(",") if c.strip()]
-        if os.getenv("DATA_CANDLE_INTERVAL"):
-            env_map["candle_interval"] = os.environ["DATA_CANDLE_INTERVAL"]
-        if os.getenv("DATA_REDIS_URL"):
-            env_map["redis_url"] = os.environ["DATA_REDIS_URL"]
-        if os.getenv("DATA_QUESTDB_ADDR"):
-            env_map["questdb_addr"] = os.environ["DATA_QUESTDB_ADDR"]
-        if os.getenv("DATA_MAX_LATENCY_MS"):
-            env_map["max_latency_ms"] = int(os.environ["DATA_MAX_LATENCY_MS"])
-        if os.getenv("DATA_Z_SCORE_THRESHOLD"):
-            env_map["z_score_threshold"] = float(os.environ["DATA_Z_SCORE_THRESHOLD"])
-        if os.getenv("DATA_MAX_SPREAD_PCT"):
-            env_map["max_spread_pct"] = float(os.environ["DATA_MAX_SPREAD_PCT"])
-
-        return cls(**env_map)
+        return cls(
+            symbols=get_data_symbols(),
+            channels=get_data_channels(),
+            candle_interval=env_str("DATA_CANDLE_INTERVAL", "1m"),
+            redis_url=get_default_redis_url(),
+            questdb_addr=get_default_questdb_http_addr(),
+            max_latency_ms=env_int("DATA_MAX_LATENCY_MS", 5000),
+            z_score_threshold=env_float("DATA_Z_SCORE_THRESHOLD", 3.0),
+            max_spread_pct=env_float("DATA_MAX_SPREAD_PCT", 1.0),
+        )

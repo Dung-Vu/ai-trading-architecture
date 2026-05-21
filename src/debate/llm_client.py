@@ -11,11 +11,25 @@ Features:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from typing import Any
 
 from loguru import logger
+
+from src.config import (
+    get_default_debate_max_tokens,
+    get_default_debate_temperature,
+    get_default_debate_timeout_seconds,
+    get_default_litellm_model,
+    get_default_llm_cache_max_entries,
+    get_default_llm_cache_ttl_seconds,
+    get_default_llm_circuit_breaker_reset_seconds,
+    get_default_llm_circuit_breaker_threshold,
+    get_default_llm_max_retries,
+)
+from src.shared_utils import trim_mapping_size
 
 try:
     import litellm
@@ -32,13 +46,17 @@ class LLMClient:
 
     def __init__(
         self,
-        model: str = "anthropic/claude-sonnet-4",
-        temperature: float = 0.7,
+        model: str | None = None,
+        temperature: float | None = None,
         api_keys: dict[str, str] | None = None,
         fallback_model: str | None = None,
-        max_retries: int = 3,
-        max_tokens: int = 4096,
-        timeout: float = 120.0,
+        max_retries: int | None = None,
+        max_tokens: int | None = None,
+        timeout: float | None = None,
+        cache_ttl_seconds: float | None = None,
+        cache_max_entries: int | None = None,
+        circuit_breaker_threshold: int | None = None,
+        circuit_breaker_reset_seconds: float | None = None,
     ) -> None:
         """
         Initialize the LLM client.
@@ -52,31 +70,65 @@ class LLMClient:
             max_retries: Number of retry attempts per model.
             max_tokens: Maximum tokens in the response.
             timeout: Timeout in seconds per LLM call.
+            cache_ttl_seconds: TTL for exact-request response caching.
+            cache_max_entries: Maximum number of cached exact requests.
+            circuit_breaker_threshold: Consecutive failed requests before opening the breaker.
+            circuit_breaker_reset_seconds: How long to keep the circuit open.
         """
         if litellm is None:
             raise ImportError(
                 "litellm is required. Install with: pip install litellm"
             )
 
-        self.model = model
-        self.temperature = temperature
+        self.model = model if model is not None else get_default_litellm_model()
+        self.temperature = (
+            temperature if temperature is not None else get_default_debate_temperature()
+        )
         self.fallback_model = fallback_model
-        self.max_retries = max_retries
-        self.max_tokens = max_tokens
-        self.timeout = timeout
+        self.max_retries = (
+            max_retries if max_retries is not None else get_default_llm_max_retries()
+        )
+        self.max_tokens = (
+            max_tokens if max_tokens is not None else get_default_debate_max_tokens()
+        )
+        self.timeout = (
+            timeout if timeout is not None else get_default_debate_timeout_seconds()
+        )
+        self.cache_ttl_seconds = (
+            cache_ttl_seconds
+            if cache_ttl_seconds is not None
+            else get_default_llm_cache_ttl_seconds()
+        )
+        self.cache_max_entries = (
+            cache_max_entries
+            if cache_max_entries is not None
+            else get_default_llm_cache_max_entries()
+        )
+        self.circuit_breaker_threshold = (
+            circuit_breaker_threshold
+            if circuit_breaker_threshold is not None
+            else get_default_llm_circuit_breaker_threshold()
+        )
+        self.circuit_breaker_reset_seconds = (
+            circuit_breaker_reset_seconds
+            if circuit_breaker_reset_seconds is not None
+            else get_default_llm_circuit_breaker_reset_seconds()
+        )
         self._api_keys = api_keys or {}
+        self._response_cache: dict[str, tuple[float, str]] = {}
+        self._consecutive_failures = 0
+        self._circuit_open_until = 0.0
 
-        # Set API keys from env if provided
-        for provider, key in self._api_keys.items():
-            env_key = f"{provider.upper()}_API_KEY"
-            litellm.api_key = key  # Default key
-            logger.debug(f"Set API key for provider: {provider}")
+        for provider in self._api_keys:
+            logger.debug(f"Configured API key for provider: {provider}")
 
         # Cumulative stats
         self.total_tokens_prompt = 0
         self.total_tokens_completion = 0
         self.total_calls = 0
         self.total_latency = 0.0
+        self.cache_hits = 0
+        self.circuit_open_rejections = 0
 
     def call(
         self,
@@ -103,6 +155,24 @@ class LLMClient:
         if self.fallback_model:
             models_to_try.append(self.fallback_model)
 
+        now = time.monotonic()
+        if self._circuit_open_until > now:
+            self.circuit_open_rejections += 1
+            raise LLMClientError(
+                "LLM circuit breaker is open due to repeated upstream failures"
+            )
+
+        cache_key = self._build_cache_key(
+            models_to_try=models_to_try,
+            messages=messages,
+            response_format=response_format,
+            temperature=temp,
+        )
+        cached = self._get_cached_response(cache_key, now)
+        if cached is not None:
+            self.cache_hits += 1
+            return cached
+
         last_error: Exception | None = None
 
         for model_id in models_to_try:
@@ -116,6 +186,10 @@ class LLMClient:
                         "max_tokens": self.max_tokens,
                         "timeout": self.timeout,
                     }
+
+                    api_key = self._resolve_api_key(model_id)
+                    if api_key:
+                        kwargs["api_key"] = api_key
 
                     # Structured output via response_format
                     if response_format is not None:
@@ -147,6 +221,9 @@ class LLMClient:
                         f"attempt={attempt + 1}"
                     )
 
+                    self._record_success()
+                    self._cache_response(cache_key, content)
+
                     return content
 
                 except Exception as exc:
@@ -158,9 +235,79 @@ class LLMClient:
                     )
                     time.sleep(wait)
 
+        self._record_failure(last_error)
+
         raise LLMClientError(
             f"All models and retries exhausted. Last error: {last_error}"
         )
+
+    def _build_cache_key(
+        self,
+        *,
+        models_to_try: list[str],
+        messages: list[dict[str, str]],
+        response_format: dict[str, Any] | None,
+        temperature: float,
+    ) -> str:
+        """Build a deterministic cache key for an exact LLM request."""
+        payload = json.dumps(
+            {
+                "models_to_try": models_to_try,
+                "messages": messages,
+                "response_format": response_format,
+                "temperature": temperature,
+                "max_tokens": self.max_tokens,
+            },
+            sort_keys=True,
+            default=str,
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def _get_cached_response(self, cache_key: str, now: float) -> str | None:
+        """Return a cached response when the exact-request TTL is still valid."""
+        cached = self._response_cache.get(cache_key)
+        if cached is None:
+            return None
+
+        expires_at, content = cached
+        if expires_at <= now:
+            self._response_cache.pop(cache_key, None)
+            return None
+
+        return content
+
+    def _cache_response(self, cache_key: str, content: str) -> None:
+        """Store a successful exact-request response in the short-lived cache."""
+        if self.cache_ttl_seconds <= 0:
+            return
+
+        expires_at = time.monotonic() + self.cache_ttl_seconds
+        self._response_cache[cache_key] = (expires_at, content)
+
+        trim_mapping_size(self._response_cache, self.cache_max_entries)
+
+    def _record_success(self) -> None:
+        """Reset circuit-breaker state after a successful upstream response."""
+        self._consecutive_failures = 0
+        self._circuit_open_until = 0.0
+
+    def _record_failure(self, exc: Exception | None) -> None:
+        """Advance circuit-breaker state after a full request failure."""
+        self._consecutive_failures += 1
+        if self._consecutive_failures < self.circuit_breaker_threshold:
+            return
+
+        self._circuit_open_until = time.monotonic() + self.circuit_breaker_reset_seconds
+        logger.error(
+            "LLM circuit breaker opened for "
+            f"{self.circuit_breaker_reset_seconds:.1f}s after "
+            f"{self._consecutive_failures} consecutive failures: {exc}"
+        )
+
+    def _resolve_api_key(self, model_id: str) -> str | None:
+        """Return the API key configured for the model's provider."""
+        provider = model_id.split("/", 1)[0].lower()
+        return self._api_keys.get(provider)
 
     def call_json(
         self,
@@ -214,6 +361,10 @@ class LLMClient:
             "total_tokens": self.total_tokens_prompt + self.total_tokens_completion,
             "total_latency_seconds": round(self.total_latency, 2),
             "avg_latency_seconds": round(avg_latency, 3),
+            "cache_hits": self.cache_hits,
+            "cached_requests": len(self._response_cache),
+            "circuit_open_until": round(self._circuit_open_until, 3),
+            "circuit_open_rejections": self.circuit_open_rejections,
         }
 
     def reset_stats(self) -> None:
@@ -222,3 +373,8 @@ class LLMClient:
         self.total_tokens_completion = 0
         self.total_calls = 0
         self.total_latency = 0.0
+        self.cache_hits = 0
+        self.circuit_open_rejections = 0
+        self._response_cache.clear()
+        self._consecutive_failures = 0
+        self._circuit_open_until = 0.0

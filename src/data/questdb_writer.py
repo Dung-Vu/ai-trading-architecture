@@ -9,6 +9,8 @@ import urllib.request
 from loguru import logger
 from questdb.ingress import Sender
 
+from src.config import get_default_questdb_http_addr
+
 
 class QuestDBWriter:
     """Async-compatible writer for QuestDB using the InfluxDB line protocol.
@@ -60,13 +62,13 @@ CREATE TABLE IF NOT EXISTS ticker_latest (
 
     def __init__(
         self,
-        addr: str = "localhost:9000",
+        addr: str | None = None,
         auto_flush_rows: int = 5000,
     ) -> None:
-        self._addr = addr
+        self._addr = addr or get_default_questdb_http_addr()
         self._auto_flush_rows = auto_flush_rows
         self._sender: Sender | None = None
-        self._http_base = f"http://{addr}"
+        self._http_base = f"http://{self._addr}"
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -113,10 +115,14 @@ CREATE TABLE IF NOT EXISTS ticker_latest (
             f"{url}?{urllib.parse.urlencode(params)}",
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            result = json.loads(resp.read())
-            if result.get("ddl") != "OK":
-                raise RuntimeError(f"DDL failed: {result}")
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                result = json.loads(resp.read())
+        except Exception as exc:
+            raise RuntimeError("Failed to execute QuestDB DDL request") from exc
+
+        if result.get("ddl") != "OK":
+            raise RuntimeError(f"DDL failed: {result}")
 
     # ------------------------------------------------------------------
     # Write operations

@@ -8,6 +8,8 @@ from typing import Any
 
 from loguru import logger
 
+from src.execution.trade_utils import calculate_realized_pnl, is_exit_order_triggered
+
 
 @dataclass
 class Position:
@@ -214,8 +216,12 @@ class DryRunExecutor:
 
         revenue = quantity * price
         cost_basis = quantity * pos.avg_price
-        pnl = revenue - cost_basis
-        pnl_pct = (pnl / cost_basis * 100) if cost_basis > 0 else 0.0
+        pnl, pnl_pct = calculate_realized_pnl(
+            pos.avg_price,
+            price,
+            quantity,
+            side_to_execute="sell",
+        )
 
         self._cash += revenue
         pos.quantity -= quantity
@@ -298,23 +304,18 @@ class DryRunExecutor:
 
         for order in pending_orders:
             sym = order["symbol"]
-            stop_price = order["stop_price"]
             order_type = order.get("type", "stop_loss")
-            direction = order.get("direction", "")
             current_price = current_prices.get(sym)
 
             if current_price is None:
                 remaining.append(order)
                 continue
 
-            # Check trigger condition
-            triggered_price = False
-            if direction == "below" and current_price <= stop_price:
-                triggered_price = True
-            elif direction == "above" and current_price >= stop_price:
-                triggered_price = True
-
-            if triggered_price:
+            if is_exit_order_triggered(
+                order.get("direction", ""),
+                current_price,
+                order["stop_price"],
+            ):
                 try:
                     if order.get("side") == "sell":
                         result = self.simulate_sell(

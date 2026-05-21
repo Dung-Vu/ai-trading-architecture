@@ -31,6 +31,13 @@ from urllib.parse import urlparse
 
 from loguru import logger
 
+from src.config import (
+    get_default_cryptopanic_api_key,
+    get_default_cryptopanic_api_url,
+    get_default_news_rss_feeds,
+)
+from src.shared_utils import parse_iso_timestamp
+
 # ─── Optional Dependencies ─────────────────────────────────────────────
 
 try:
@@ -46,13 +53,6 @@ try:
 except ImportError:
     HTTPX_AVAILABLE = False
     httpx = None  # type: ignore
-
-try:
-    import asyncio
-    ASYNCIO_AVAILABLE = True
-except ImportError:
-    ASYNCIO_AVAILABLE = False
-    asyncio = None  # type: ignore
 
 
 # ─── Sentiment Keyword Lists ───────────────────────────────────────────
@@ -108,17 +108,14 @@ class NewsPipeline:
     keyword scoring, and provides per-symbol and aggregate sentiment.
     """
 
-    # RSS Feed URLs
-    COINDESK_RSS = "https://www.coindesk.com/arc/outboundfeeds/rss/"
-    COINTELEGRAPH_RSS = "https://cointelegraph.com/rss"
-    CRYPTONEWS_RSS = "https://cryptonews.com/news/feed/"
-
     def __init__(
         self,
         symbols: list[str] | None = None,
         languages: list[str] | None = None,
         cryptopanic_api_key: str | None = None,
         twitter_api_key: str | None = None,
+        rss_feeds: dict[str, str] | None = None,
+        cryptopanic_api_url: str | None = None,
     ) -> None:
         """
         Initialize the news pipeline.
@@ -131,8 +128,18 @@ class NewsPipeline:
         """
         self.symbols = symbols or ["BTC", "ETH", "SOL", "XRP", "ADA"]
         self.languages = languages or ["en"]
-        self.cryptopanic_api_key = cryptopanic_api_key
+        self.cryptopanic_api_key = (
+            cryptopanic_api_key
+            if cryptopanic_api_key is not None
+            else get_default_cryptopanic_api_key()
+        )
         self.twitter_api_key = twitter_api_key
+        self.rss_feeds = (
+            dict(rss_feeds) if rss_feeds else get_default_news_rss_feeds()
+        )
+        self.cryptopanic_api_url = (
+            cryptopanic_api_url or get_default_cryptopanic_api_url()
+        )
 
         # Internal HTTP client
         self._http_client: Any = None
@@ -140,6 +147,27 @@ class NewsPipeline:
         logger.info(
             f"✅ NewsPipeline initialized for symbols: {self.symbols}"
         )
+
+    def close(self) -> None:
+        """Release any owned HTTP client resources."""
+        client = self._http_client
+        self._http_client = None
+        if client is None:
+            return
+
+        try:
+            client.close()
+        except Exception as exc:
+            logger.debug(f"[NewsPipeline] HTTP client close failed: {exc}")
+
+    def __enter__(self) -> "NewsPipeline":
+        """Support context-manager usage for explicit client cleanup."""
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        """Close owned resources when leaving a context-manager scope."""
+        del exc_type, exc, tb
+        self.close()
 
     def _get_http_client(self) -> Any:
         """Get or create an HTTP client."""
@@ -168,27 +196,15 @@ class NewsPipeline:
         all_news: list[dict[str, Any]] = []
         cutoff = time.time() - hours * 3600
 
-        # 1. CoinDesk RSS
-        try:
-            coindesk_news = self._fetch_rss(
-                self.COINDESK_RSS, symbol, source="CoinDesk"
-            )
-            all_news.extend(coindesk_news)
-            logger.debug(f"[NewsPipeline] CoinDesk: {len(coindesk_news)} items for {symbol}")
-        except Exception as exc:
-            logger.warning(f"[NewsPipeline] CoinDesk fetch failed: {exc}")
-
-        # 2. CoinTelegraph RSS
-        try:
-            cointelegraph_news = self._fetch_rss(
-                self.COINTELEGRAPH_RSS, symbol, source="CoinTelegraph"
-            )
-            all_news.extend(cointelegraph_news)
-            logger.debug(
-                f"[NewsPipeline] CoinTelegraph: {len(cointelegraph_news)} items for {symbol}"
-            )
-        except Exception as exc:
-            logger.warning(f"[NewsPipeline] CoinTelegraph fetch failed: {exc}")
+        for source, url in self.rss_feeds.items():
+            try:
+                rss_news = self._fetch_rss(url, symbol, source=source)
+                all_news.extend(rss_news)
+                logger.debug(
+                    f"[NewsPipeline] {source}: {len(rss_news)} items for {symbol}"
+                )
+            except Exception as exc:
+                logger.warning(f"[NewsPipeline] {source} fetch failed: {exc}")
 
         # 3. CryptoPanic API (if key provided)
         if self.cryptopanic_api_key:
@@ -277,7 +293,6 @@ class NewsPipeline:
         if not client:
             return []
 
-        url = "https://cryptopanic.com/api/v1/posts/"
         params = {
             "auth_token": self.cryptopanic_api_key,
             "currencies": symbol,
@@ -285,7 +300,7 @@ class NewsPipeline:
             "filter": "important",
         }
 
-        response = client.get(url, params=params)
+        response = client.get(self.cryptopanic_api_url, params=params)
         response.raise_for_status()
 
         data = response.json()
@@ -296,7 +311,7 @@ class NewsPipeline:
             created = post.get("created_at", "")
 
             # Parse ISO timestamp
-            ts = _parse_iso_timestamp(created)
+            ts = parse_iso_timestamp(created)
 
             results.append({
                 "title": title,
@@ -577,14 +592,3 @@ class NewsPipeline:
 
 
 # ─── Helpers ───────────────────────────────────────────────────────────
-
-def _parse_iso_timestamp(ts: str) -> float:
-    """Parse ISO 8601 timestamp to unix time."""
-    if not ts:
-        return 0.0
-    try:
-        ts_clean = ts.replace("Z", "+00:00")
-        dt = datetime.fromisoformat(ts_clean)
-        return dt.timestamp()
-    except (ValueError, TypeError):
-        return 0.0

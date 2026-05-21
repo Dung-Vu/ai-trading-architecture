@@ -48,3 +48,19 @@ class TestKillSwitch:
         ks.arm()
         ks.auto_check(max_drawdown_pct=0.10, current_drawdown=0.05)
         assert ks.is_active() is False
+
+    def test_disarm_requires_explicit_confirmation(self):
+        ks = KillSwitch()
+
+        with pytest.raises(ValueError, match="DISARM"):
+            ks.disarm()
+
+    def test_trigger_records_previous_state(self):
+        ks = KillSwitch()
+        ks.arm()
+
+        ks.trigger("Risk breach")
+
+        trigger = ks.get_last_trigger()
+        assert trigger is not None
+        assert trigger["state_before"] == "armed"

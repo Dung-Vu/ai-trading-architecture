@@ -6,6 +6,8 @@ from dataclasses import dataclass
 
 from loguru import logger
 
+from src.config import get_default_position_sizer_risk_pct
+
 
 @dataclass
 class PositionSizeResult:
@@ -89,7 +91,7 @@ class PositionSizer:
         entry_price: float,
         stop_loss_price: float,
         equity: float,
-        risk_pct: float = 0.02,
+        risk_pct: float | None = None,
     ) -> float:
         """Calculate position size using Van Tharp's method.
 
@@ -105,6 +107,9 @@ class PositionSizer:
             Position size in base currency units.
         """
         stop_distance = abs(entry_price - stop_loss_price)
+        risk_pct = (
+            risk_pct if risk_pct is not None else get_default_position_sizer_risk_pct()
+        )
 
         if stop_distance <= 0:
             logger.warning("Stop distance is zero, returning 0")

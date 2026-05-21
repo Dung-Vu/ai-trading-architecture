@@ -69,3 +69,13 @@ class TestMetricsCalculator:
         assert "profit_factor" in summary
         assert summary["total_trades"] == 5
         assert abs(summary["total_return_pct"] - 3.7) < 0.1  # (10370-10000)/10000 * 100
+
+    def test_trade_pnl_sharpe_ratio(self):
+        pnls = [100.0, -40.0, 80.0, -20.0, 60.0]
+        sharpe = MetricsCalculator.calc_trade_pnl_sharpe_ratio(pnls, risk_free_rate=0.0)
+        assert sharpe > 0
+
+    def test_trade_pnl_max_drawdown(self):
+        pnls = [100.0, 50.0, -75.0, -25.0, 20.0]
+        max_dd = MetricsCalculator.calc_trade_pnl_max_drawdown(pnls)
+        assert abs(max_dd - (100.0 / 150.0)) < 0.001

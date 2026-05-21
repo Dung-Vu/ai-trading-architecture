@@ -5,6 +5,10 @@ Each prompt includes: role definition, task description, constraints,
 output format specification (JSON), and anti-sycophancy rules.
 """
 
+from typing import Any
+
+from src.config import env_float, env_int
+
 # ─── Anti-Sycophancy Rules (embedded in every agent prompt) ───────────
 ANTI_SYCOPHANCY_RULES = """
 ANTI-SYCOPHANCY RULES (MANDATORY):
@@ -180,7 +184,37 @@ OUTPUT FORMAT (JSON only, no markdown wrapper):
 """
 
 # ─── Risk Manager ─────────────────────────────────────────────────────
-RISK_MANAGER_SYSTEM_PROMPT = f"""You are a CHIEF RISK OFFICER on a professional trading desk.
+def _risk_limit_values(risk_config: Any | None = None) -> dict[str, float]:
+    """Resolve risk limits from AppConfig.risk-compatible data or env defaults."""
+    if risk_config is None:
+        return {
+            "max_daily_loss_pct": env_float("MAX_DAILY_LOSS_PCT", 3.0),
+            "max_drawdown_pct": env_float("MAX_DRAWDOWN_PCT", 10.0),
+            "max_position_pct": env_float("MAX_POSITION_PCT", 20.0),
+            "max_leverage": float(env_int("MAX_LEVERAGE", 3)),
+        }
+
+    return {
+        "max_daily_loss_pct": float(getattr(risk_config, "max_daily_loss_pct")),
+        "max_drawdown_pct": float(getattr(risk_config, "max_drawdown_pct")),
+        "max_position_pct": float(getattr(risk_config, "max_position_pct")),
+        "max_leverage": float(getattr(risk_config, "max_leverage")),
+    }
+
+
+def build_risk_manager_system_prompt(risk_config: Any | None = None) -> str:
+    """Build the risk manager prompt from configured hard risk limits."""
+    limits = _risk_limit_values(risk_config)
+    return _RISK_MANAGER_SYSTEM_PROMPT_TEMPLATE.format(
+        anti_sycophancy_rules=ANTI_SYCOPHANCY_RULES,
+        max_daily_loss_pct=f"{limits['max_daily_loss_pct']:g}",
+        max_drawdown_pct=f"{limits['max_drawdown_pct']:g}",
+        max_position_pct=f"{limits['max_position_pct']:g}",
+        max_leverage=f"{limits['max_leverage']:g}",
+    )
+
+
+_RISK_MANAGER_SYSTEM_PROMPT_TEMPLATE = """You are a CHIEF RISK OFFICER on a professional trading desk.
 
 ROLE:
 Your job is to review the Judge's trading decision against HARD RISK LIMITS.
@@ -188,18 +222,18 @@ You have the authority to: APPROVE, REJECT, REDUCE position size, or FLATTEN
 (close all positions). Capital preservation is your #1 priority.
 
 HARD LIMITS (MUST ENFORCE):
-- Max daily loss: 3% of total portfolio value → if exceeded, REJECT all new trades
-- Max drawdown: 10% from peak equity → if exceeded, FLATTEN all positions
-- Max concentration: 20% of portfolio in any single position → reduce if exceeded
-- Max leverage: 3x → reject if proposed leverage exceeds this
+- Max daily loss: {max_daily_loss_pct}% of total portfolio value - if exceeded, REJECT all new trades
+- Max drawdown: {max_drawdown_pct}% from peak equity - if exceeded, FLATTEN all positions
+- Max concentration: {max_position_pct}% of portfolio in any single position - reduce if exceeded
+- Max leverage: {max_leverage}x - reject if proposed leverage exceeds this
 
 TASK:
 1. Review the Judge's proposed decision (action, confidence, SL, TP).
 2. Check against current portfolio state:
    - Current positions and P&L
-   - Daily P&L vs 3% limit
-   - Total drawdown from peak vs 10% limit
-   - Position concentration vs 20% limit
+   - Daily P&L vs {max_daily_loss_pct}% limit
+   - Total drawdown from peak vs {max_drawdown_pct}% limit
+   - Position concentration vs {max_position_pct}% limit
 3. Evaluate the risk/reward of the proposed trade:
    - Is the stop-loss tight enough?
    - Is the take-profit realistic?
@@ -232,5 +266,7 @@ OUTPUT FORMAT (JSON only, no markdown wrapper):
   "risk_factors": ["<risk1>", "<risk2>", ...]
 }}
 
-{ANTI_SYCOPHANCY_RULES}
+{anti_sycophancy_rules}
 """
+
+RISK_MANAGER_SYSTEM_PROMPT = build_risk_manager_system_prompt()

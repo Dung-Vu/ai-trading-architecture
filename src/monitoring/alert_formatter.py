@@ -16,6 +16,8 @@ class AlertFormatter:
         price: float,
         pnl: float | None = None,
         strategy: str = "SMA Cross",
+        ai_confidence: float | None = None,
+        mode: str | None = None,
     ) -> str:
         """Return an HTML-formatted trade notification.
 
@@ -44,6 +46,12 @@ class AlertFormatter:
             f"<b>Price:</b> ${price:,.2f}\n"
             f"<b>Strategy:</b> <code>{strategy}</code>"
         )
+
+        if ai_confidence is not None:
+            msg += f"\n<b>AI Confidence:</b> <code>{ai_confidence:.1f}%</code>"
+
+        if mode is not None:
+            msg += f"\n<b>Mode:</b> <code>{mode}</code>"
 
         if pnl is not None:
             pnl_emoji = "🟢" if pnl >= 0 else "🔴"

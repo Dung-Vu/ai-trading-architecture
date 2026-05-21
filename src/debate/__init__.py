@@ -35,7 +35,6 @@ from .agents import (
     JudgeAgent,
     RiskManagerAgent,
 )
-from .debate_engine import DebateEngine, DebateState
 from .llm_client import LLMClient
 from .models import (
     AgentOutput,
@@ -68,7 +67,11 @@ __all__ = [
 
 
 def __getattr__(name: str):
-    """Lazy import for DSPyOptimizer to avoid requiring dspy-ai at package level."""
+    """Lazy imports for optional debate submodules."""
+    if name in {"DebateEngine", "DebateState"}:
+        from .debate_engine import DebateEngine, DebateState
+
+        return {"DebateEngine": DebateEngine, "DebateState": DebateState}[name]
     if name == "DSPyOptimizer":
         from .optimizer import DSPyOptimizer
         return DSPyOptimizer

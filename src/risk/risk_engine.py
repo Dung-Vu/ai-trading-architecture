@@ -53,6 +53,7 @@ class RiskEngine:
         self._daily_pnl: float = 0.0
         self._start_equity: float = 0.0
         self._peak_equity: float = 0.0
+        self._current_equity: float | None = None
         self._last_reset_date: date = datetime.now(timezone.utc).date()
 
     def _reset_if_new_day(self) -> None:
@@ -88,6 +89,7 @@ class RiskEngine:
             Tuple of (approved, reason). approved=True means trade passes.
         """
         self._reset_if_new_day()
+        self.snapshot_equity(current_equity=current_equity, start_equity=start_equity)
 
         trade_value = quantity * price
 
@@ -163,9 +165,28 @@ class RiskEngine:
         Args:
             equity: Current equity value.
         """
+        if self._current_equity is None:
+            self._current_equity = equity
+
+        if self._start_equity == 0.0 and equity > 0:
+            self._start_equity = equity
+
         if equity > self._peak_equity:
             self._peak_equity = equity
             logger.debug(f"New peak equity recorded: {self._peak_equity:.2f}")
+
+    def snapshot_equity(
+        self,
+        current_equity: float,
+        start_equity: float | None = None,
+    ) -> None:
+        """Store the latest equity snapshot for status and drawdown checks."""
+        if start_equity is not None and start_equity > 0:
+            self._start_equity = start_equity
+
+        if current_equity >= 0:
+            self._current_equity = current_equity
+            self.update_peak_equity(current_equity)
 
     def reset_daily(self) -> None:
         """Reset daily P&L tracker at day boundary."""
@@ -190,8 +211,8 @@ class RiskEngine:
         )
 
         drawdown = (
-            (self._peak_equity - self._peak_equity) / self._peak_equity
-            if self._peak_equity > 0
+            max(0.0, (self._peak_equity - self._current_equity) / self._peak_equity)
+            if self._peak_equity > 0 and self._current_equity is not None
             else 0.0
         )
 
@@ -201,11 +222,17 @@ class RiskEngine:
             and abs(self._daily_pnl) / self._start_equity >= self.max_daily_loss_pct
         )
 
+        drawdown_exceeded = (
+            self._peak_equity > 0
+            and self._current_equity is not None
+            and drawdown >= self.max_drawdown_pct
+        )
+
         return RiskStatus(
             daily_pnl=self._daily_pnl,
             daily_pnl_pct=daily_pnl_pct,
             peak_equity=self._peak_equity,
             current_drawdown_pct=drawdown,
             daily_loss_limit_exceeded=daily_exceeded,
-            drawdown_limit_exceeded=False,  # Requires current equity
+            drawdown_limit_exceeded=drawdown_exceeded,
         )

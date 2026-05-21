@@ -11,6 +11,9 @@ from loguru import logger
 from .exchange_client import ExchangeClient
 
 
+OrderResult = dict[str, Any]
+
+
 class OrderManager:
     """Manages order creation, cancellation, and status tracking."""
 
@@ -23,7 +26,7 @@ class OrderManager:
         """
         self._client = exchange_client
         self._dry_run = dry_run
-        self._dry_run_orders: dict[str, dict] = {}
+        self._dry_run_orders: dict[str, OrderResult] = {}
         self._dry_run_order_counter = 0
 
     def _precision_amount(self, symbol: str, amount: float) -> float:
@@ -52,7 +55,7 @@ class OrderManager:
         amount: float,
         price: float | None = None,
         stop_price: float | None = None,
-    ) -> dict:
+    ) -> OrderResult:
         """Create a simulated order for dry-run mode."""
         order = {
             "id": order_id,
@@ -79,7 +82,7 @@ class OrderManager:
         symbol: str,
         side: str,
         amount: float,
-    ) -> dict:
+    ) -> OrderResult:
         """Create a market order.
 
         Args:
@@ -112,7 +115,7 @@ class OrderManager:
         side: str,
         amount: float,
         price: float,
-    ) -> dict:
+    ) -> OrderResult:
         """Create a limit order.
 
         Args:
@@ -148,7 +151,7 @@ class OrderManager:
         amount: float,
         stop_price: float,
         limit_price: float,
-    ) -> dict:
+    ) -> OrderResult:
         """Create a stop-loss order (stop_loss_limit).
 
         Args:
@@ -192,7 +195,7 @@ class OrderManager:
         amount: float,
         stop_price: float,
         limit_price: float,
-    ) -> dict:
+    ) -> OrderResult:
         """Create a take-profit order (take_profit_limit).
 
         Args:
@@ -237,7 +240,7 @@ class OrderManager:
         entry_price: float,
         stop_loss: float,
         take_profit: float,
-    ) -> dict:
+    ) -> OrderResult:
         """Create a bracket order (entry + SL + TP).
 
         Args:
@@ -262,8 +265,8 @@ class OrderManager:
                 sl_limit_price = stop_loss * 0.995 if side == "buy" else stop_loss * 1.005
                 tp_limit_price = take_profit * 0.995 if side == "sell" else take_profit * 1.005
             else:
-                sl_limit_price = self._precision_price(symbol, stop_loss)
-                tp_limit_price = self._precision_price(symbol, take_profit)
+                sl_limit_price = stop_loss
+                tp_limit_price = take_profit
 
             entry = self.create_limit_order(symbol, side, amount, entry_price)
 
@@ -298,7 +301,7 @@ class OrderManager:
             # Attempt cleanup on failure
             raise
 
-    def cancel_order(self, order_id: str, symbol: str) -> dict:
+    def cancel_order(self, order_id: str, symbol: str) -> OrderResult:
         """Cancel a specific order.
 
         Args:
@@ -323,7 +326,7 @@ class OrderManager:
             logger.error(f"Failed to cancel order {order_id}: {e}")
             raise
 
-    def cancel_all_orders(self, symbol: str) -> list[dict]:
+    def cancel_all_orders(self, symbol: str) -> list[OrderResult]:
         """Cancel all open orders for a symbol.
 
         Args:

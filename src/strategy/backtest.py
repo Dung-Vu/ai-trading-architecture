@@ -7,6 +7,8 @@ from typing import Any, Optional
 import pandas as pd
 from loguru import logger
 
+from src.config import env_float, get_default_exchange_name
+from src.reports.utils import extract_equity, extract_trades
 from .base import BaseStrategy
 
 
@@ -43,16 +45,18 @@ class BacktestRunner:
         start_date: str | datetime,
         end_date: str | datetime,
         parameters: Optional[dict[str, Any]] = None,
-        ccxt_exchange: str = "binance",
+        ccxt_exchange: str | None = None,
         quote_asset: str = "USDT",
-        initial_capital: float = 100_000,
+        initial_capital: float | None = None,
         benchmark_asset: Optional[str] = None,
     ) -> None:
         self.strategy_class = strategy_class
         self.symbol = symbol
         self.quote_asset = quote_asset
-        self.initial_capital = initial_capital
-        self.ccxt_exchange = ccxt_exchange
+        self.initial_capital = (
+            initial_capital if initial_capital is not None else env_float("INITIAL_CAPITAL", 100_000)
+        )
+        self.ccxt_exchange = ccxt_exchange or get_default_exchange_name()
         self.benchmark_asset = benchmark_asset
 
         # Parse dates
@@ -70,7 +74,7 @@ class BacktestRunner:
         self.parameters = {
             "symbol": symbol,
             "quote_asset": quote_asset,
-            "initial_capital": initial_capital,
+            "initial_capital": self.initial_capital,
         }
         if parameters:
             self.parameters.update(parameters)
@@ -202,12 +206,12 @@ class BacktestRunner:
             raise RuntimeError("No results available. Call run() first.")
 
         # Try to extract equity curve from results
-        equity = _get_equity_curve(self._results)
+        equity = extract_equity(self._results)
         if equity is None or equity.empty:
             logger.warning("No equity curve data available for plotting.")
             return None
 
-        trades_list = _get_trades(self._results)
+        trades_list = extract_trades(self._results)
 
         fig = make_subplots(
             rows=2,
@@ -315,32 +319,3 @@ def _safe_int(data: dict, key: str) -> Optional[int]:
     except (TypeError, ValueError):
         return None
 
-
-def _get_equity_curve(results: dict[str, Any]) -> Optional[pd.Series]:
-    """Extract equity curve from Lumibot results."""
-    # Try common keys
-    for key in ("equity_curve", "portfolio_value", "portfolio", "value"):
-        val = results.get(key)
-        if val is not None:
-            if isinstance(val, pd.Series):
-                return val
-            if isinstance(val, pd.DataFrame):
-                # Guess the value column
-                for col in ["value", "equity", "portfolio_value", "total"]:
-                    if col in val.columns:
-                        return val[col]
-                return val.iloc[:, 0]  # first column as fallback
-            if isinstance(val, (list, tuple)):
-                return pd.Series(val)
-    return None
-
-
-def _get_trades(results: dict[str, Any]) -> list[dict]:
-    """Extract trade list from Lumibot results."""
-    for key in ("trades", "filled_trades", "trade_log", "orders"):
-        val = results.get(key)
-        if val is not None and isinstance(val, (list, pd.DataFrame)):
-            if isinstance(val, pd.DataFrame):
-                return val.to_dict(orient="records")
-            return val
-    return []

@@ -6,12 +6,13 @@ Uses loguru with file rotation (daily), error-only files, and JSONL trade logs.
 from __future__ import annotations
 
 import json
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from loguru import logger
+
+from src.logging_config import setup_logging
 
 
 class TradingLogger:
@@ -31,9 +32,6 @@ class TradingLogger:
         self._level = level
         self._setup_done = False
 
-        # Separate loguru logger instance for trade JSONL
-        self._trade_logger = logger.bind(kind="trade")
-
     def setup(self) -> None:
         """Configure loguru sinks: console, daily rotating files, error file, JSONL."""
         if self._setup_done:
@@ -41,51 +39,11 @@ class TradingLogger:
             return
 
         self._log_dir.mkdir(parents=True, exist_ok=True)
-
-        # Remove default sink
-        logger.remove()
-
-        # 1. Console output (colored, INFO+)
-        logger.add(
-            sys.stderr,
-            level=self._level,
-            format=(
-                "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
-                "<level>{level: <8}</level> | "
-                "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> | "
-                "<level>{message}</level>"
-            ),
-            colorize=True,
-        )
-
-        # 2. Daily rotating log file (all levels, 30 days retention)
-        logger.add(
-            self._log_dir / "trading_{time:YYYY-MM-DD}.log",
-            level=self._level,
-            rotation="00:00",
-            retention="30 days",
-            compression="zip",
-            format=(
-                "{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | "
-                "{name}:{function}:{line} | {message}"
-            ),
-            enqueue=True,
-        )
-
-        # 3. Error-only file (ERROR and above)
-        logger.add(
-            self._log_dir / "error_{time:YYYY-MM-DD}.log",
-            level="ERROR",
-            rotation="00:00",
-            retention="30 days",
-            compression="zip",
-            format=(
-                "{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | "
-                "{name}:{function}:{line} | {message}"
-            ),
-            backtrace=True,
-            diagnose=True,
-            enqueue=True,
+        setup_logging(
+            log_level=self._level,
+            app_log_name="trading",
+            error_log_name="error",
+            log_dir=self._log_dir,
         )
 
         self._setup_done = True

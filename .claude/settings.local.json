@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(opencode --version)",
+      "Bash(codex --version)",
+      "Bash(npm install *)",
+      "Bash(npm view *)",
+      "Bash(git add *)"
+    ]
+  }
+}

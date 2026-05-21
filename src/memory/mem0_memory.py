@@ -17,14 +17,19 @@ Usage:
 
 from __future__ import annotations
 
-import hashlib
 import json
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from loguru import logger
+from src.config import (
+    get_default_mem0_embedding_model,
+    get_default_mem0_llm_model,
+    get_default_qdrant_url,
+)
+from src.shared_utils import parse_iso_timestamp
+from .fallback_store import _InMemoryStore
 
 # ─── Optional Dependencies ─────────────────────────────────────────────
 
@@ -43,109 +48,18 @@ except ImportError:
     qdrant_client = None  # type: ignore
 
 
+def yaml_safe_load(handle: Any) -> Any:
+    """Safe YAML load helper kept near the config-loading call site."""
+    try:
+        import yaml
+
+        return yaml.safe_load(handle)
+    except ImportError:
+        return {}
+
+
 # ─── In-Memory Fallback Store ─────────────────────────────────────────
 
-class _InMemoryStore:
-    """Simple in-memory fallback when Mem0/Qdrant are unavailable.
-
-    Uses keyword-based matching instead of vector embeddings.
-    """
-
-    def __init__(self) -> None:
-        self._memories: list[dict[str, Any]] = []
-        self._index: dict[str, list[int]] = {}  # keyword -> [indices]
-
-    def add(self, memory: dict[str, Any]) -> str:
-        """Add a memory and index its keywords."""
-        idx = len(self._memories)
-        self._memories.append(memory)
-
-        # Build keyword index from text fields
-        text = " ".join(self._extract_text(memory))
-        keywords = set(self._tokenize(text))
-        for kw in keywords:
-            self._index.setdefault(kw, []).append(idx)
-
-        memory_id = hashlib.md5(f"{memory.get('timestamp', '')}-{idx}".encode()).hexdigest()[:12]
-        memory["_id"] = memory_id
-        memory["_idx"] = idx
-        return memory_id
-
-    def search(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
-        """Keyword-based similarity search."""
-        query_tokens = set(self._tokenize(query))
-        if not query_tokens:
-            return []
-
-        # Score each memory by keyword overlap
-        scores: list[tuple[float, dict[str, Any]]] = []
-        for mem in self._memories:
-            mem_text = " ".join(self._extract_text(mem))
-            mem_tokens = set(self._tokenize(mem_text))
-            overlap = len(query_tokens & mem_tokens)
-            if overlap > 0:
-                score = overlap / max(len(query_tokens | mem_tokens), 1)
-                scores.append((score, mem))
-
-        scores.sort(key=lambda x: x[0], reverse=True)
-        return [mem for _, mem in scores[:limit]]
-
-    def update(self, memory_id: str, updates: dict[str, Any]) -> bool:
-        """Update a memory by its ID."""
-        for mem in self._memories:
-            if mem.get("_id") == memory_id:
-                mem.update(updates)
-                mem["updated_at"] = datetime.now(timezone.utc).isoformat()
-                return True
-        return False
-
-    def get_all(self, symbol: str | None = None) -> list[dict[str, Any]]:
-        """Get all memories, optionally filtered by symbol."""
-        if symbol is None:
-            return list(self._memories)
-        return [m for m in self._memories if m.get("symbol") == symbol]
-
-    def clear_old(self, days: int = 90) -> int:
-        """Remove memories older than N days."""
-        cutoff = datetime.now(timezone.utc).timestamp() - days * 86400
-        original_len = len(self._memories)
-        self._memories = [
-            m for m in self._memories
-            if m.get("_ts", 0) >= cutoff
-        ]
-        # Rebuild index
-        self._index.clear()
-        for idx, mem in enumerate(self._memories):
-            mem["_idx"] = idx
-            text = " ".join(self._extract_text(mem))
-            for kw in self._tokenize(text):
-                self._index.setdefault(kw, []).append(idx)
-        return original_len - len(self._memories)
-
-    @staticmethod
-    def _extract_text(memory: dict[str, Any]) -> list[str]:
-        """Extract all text fields from a memory dict."""
-        texts = []
-        for key in ("symbol", "side", "decision_reasoning", "outcome_notes",
-                     "market_conditions", "lessons", "action", "reasoning"):
-            val = memory.get(key)
-            if val:
-                texts.append(str(val))
-        # Also include indicator values as text
-        indicators = memory.get("indicators", {})
-        if isinstance(indicators, dict):
-            for k, v in indicators.items():
-                texts.append(f"{k}={v}")
-        return texts
-
-    @staticmethod
-    def _tokenize(text: str) -> list[str]:
-        """Simple tokenizer: lowercase, split on non-alphanumeric."""
-        import re
-        return re.findall(r'[a-z0-9]+', text.lower())
-
-    def __len__(self) -> int:
-        return len(self._memories)
 
 
 # ─── Mem0Memory ────────────────────────────────────────────────────────
@@ -165,7 +79,9 @@ class Mem0Memory:
     def __init__(
         self,
         config_path: str | None = None,
-        qdrant_url: str = "http://localhost:6333",
+        qdrant_url: str | None = None,
+        embedding_model: str | None = None,
+        llm_model: str | None = None,
     ) -> None:
         """
         Initialize Mem0Memory.
@@ -174,7 +90,9 @@ class Mem0Memory:
             config_path: Path to Mem0 config YAML. If None, uses defaults.
             qdrant_url: Qdrant server URL for vector storage.
         """
-        self._qdrant_url = qdrant_url
+        self._qdrant_url = qdrant_url or get_default_qdrant_url()
+        self._embedding_model = embedding_model or get_default_mem0_embedding_model()
+        self._llm_model = llm_model or get_default_mem0_llm_model()
         self._use_mem0 = MEM0_AVAILABLE and QDRANT_AVAILABLE
         self._mem0_client: Any = None
         self._fallback: _InMemoryStore | None = None
@@ -185,7 +103,7 @@ class Mem0Memory:
                     "vector_store": {
                         "provider": "qdrant",
                         "config": {
-                            "url": qdrant_url,
+                            "url": self._qdrant_url,
                             "collection_name": "trading_memories",
                             "embedding_model_dims": 384,
                         },
@@ -193,13 +111,13 @@ class Mem0Memory:
                     "embedder": {
                         "provider": "huggingface",
                         "config": {
-                            "model": "sentence-transformers/all-MiniLM-L6-v2",
+                            "model": self._embedding_model,
                         },
                     },
                     "llm": {
                         "provider": "openai",
                         "config": {
-                            "model": "gpt-4o-mini",
+                            "model": self._llm_model,
                             "temperature": 0,
                         },
                     },
@@ -279,7 +197,7 @@ class Mem0Memory:
             "take_profit": trade.get("take_profit"),
             "outcome": "pending",
             "pnl": None,
-            "_ts": _parse_timestamp(timestamp),
+            "_ts": parse_iso_timestamp(timestamp),
         }
 
         if self._use_mem0 and self._mem0_client:
@@ -662,15 +580,19 @@ class Mem0Memory:
 
                 for item in all_results:
                     mem = item.get("metadata", {})
-                    ts = mem.get("_ts", 0) or _parse_timestamp(mem.get("timestamp", ""))
+                    ts = mem.get("_ts", 0) or parse_iso_timestamp(
+                        mem.get("timestamp", "")
+                    )
                     if ts < cutoff:
                         memory_id = item.get("memory_id", item.get("id", ""))
                         if memory_id:
                             try:
                                 self._mem0_client.delete(memory_id=memory_id)
                                 removed += 1
-                            except Exception:
-                                pass
+                            except Exception as exc:
+                                logger.debug(
+                                    f"[Mem0Memory] Failed to delete memory {memory_id}: {exc}"
+                                )
 
                 logger.info(
                     f"[Mem0Memory] Cleared {removed} memories older than {days} days"
@@ -704,26 +626,3 @@ class Mem0Memory:
             }
         return {"store_type": "none", "status": "unavailable"}
 
-
-# ─── Helpers ───────────────────────────────────────────────────────────
-
-def _parse_timestamp(ts: str) -> float:
-    """Parse an ISO timestamp string to unix timestamp."""
-    if not ts:
-        return 0.0
-    try:
-        # Handle various ISO formats
-        ts_clean = ts.replace("Z", "+00:00")
-        dt = datetime.fromisoformat(ts_clean)
-        return dt.timestamp()
-    except (ValueError, TypeError):
-        return 0.0
-
-
-def yaml_safe_load(f: Any) -> Any:
-    """Safe YAML load helper (avoids import dependency at top level)."""
-    try:
-        import yaml
-        return yaml.safe_load(f)
-    except ImportError:
-        return {}

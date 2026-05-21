@@ -8,23 +8,25 @@ logic that works standalone without database connections.
 from __future__ import annotations
 
 import random
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pandas as pd
+
+from src.reports.utils import format_currency as _format_currency
+from src.reports.utils import format_percent as _format_percent
 
 
 # ─── Formatting helpers ────────────────────────────────────────────────
 
 def format_currency(value: float) -> str:
     """Format a number as currency: '$12,345.67'."""
-    sign = "-" if value < 0 else ""
-    return f"{sign}${abs(value):,.2f}"
+    return _format_currency(value)
 
 
 def format_pct(value: float) -> str:
     """Format a number as percentage: '12.34%'."""
-    return f"{value:.2f}%"
+    return _format_percent(value)
 
 
 def color_pnl(value: float) -> str:
@@ -109,7 +111,7 @@ def load_mock_data(
         random.seed(seed)
         np.random.seed(seed)
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     start_date = now - timedelta(days=90)
 
     # ── Generate equity curve ──

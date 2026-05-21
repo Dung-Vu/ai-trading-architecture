@@ -18,12 +18,18 @@ Usage:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from dataclasses import dataclass, field, asdict
 from typing import Any
 
 from loguru import logger
+
+from src.config import (
+    get_default_knowledge_graph_min_occurrences,
+    get_default_knowledge_graph_top_n,
+)
 
 
 # ─── Pattern Data Class ────────────────────────────────────────────────
@@ -75,6 +81,9 @@ class KnowledgeGraph:
         """Initialize an empty knowledge graph."""
         self._patterns: list[PatternNode] = []
         self._index: dict[str, list[int]] = {}  # keyword → [pattern indices]
+        self._keyword_sets: list[set[str]] = []
+        self._pattern_ids: list[str] = []
+        self._pattern_id_to_index: dict[str, int] = {}
         self._version: int = 1
         logger.info("✅ KnowledgeGraph initialized")
 
@@ -104,9 +113,7 @@ class KnowledgeGraph:
         Returns:
             Pattern ID string (condition hash + index).
         """
-        import hashlib
-        cond_hash = hashlib.md5(condition.encode()).hexdigest()[:8]
-        pattern_id = f"pat_{cond_hash}_{len(self._patterns)}"
+        pattern_id = self._make_pattern_id(condition, len(self._patterns))
 
         wins = 1 if outcome == "win" else 0
         losses = 1 if outcome == "loss" else 0
@@ -128,6 +135,10 @@ class KnowledgeGraph:
 
         # Build keyword index from condition
         keywords = self._extract_keywords(condition)
+        keyword_set = set(keywords)
+        self._keyword_sets.append(keyword_set)
+        self._pattern_ids.append(pattern_id)
+        self._pattern_id_to_index[pattern_id] = idx
         for kw in keywords:
             self._index.setdefault(kw, []).append(idx)
 
@@ -161,6 +172,7 @@ class KnowledgeGraph:
         node = self._patterns[pattern_idx]
         node.occurrences += 1
         node.updated_at = time.time()
+        node.outcome = outcome
 
         if outcome == "win":
             node.wins += 1
@@ -183,6 +195,20 @@ class KnowledgeGraph:
         )
         return True
 
+    def update_pattern_by_id(
+        self,
+        pattern_id: str,
+        outcome: str,
+        pnl: float = 0.0,
+    ) -> bool:
+        """Update a pattern by its deterministic pattern ID."""
+        pattern_idx = self._pattern_id_to_index.get(pattern_id)
+        if pattern_idx is None:
+            logger.warning(f"[KnowledgeGraph] Pattern ID {pattern_id} not found")
+            return False
+
+        return self.update_pattern(pattern_idx, outcome=outcome, pnl=pnl)
+
     # ─── Query Methods ─────────────────────────────────────────────────
 
     def query_pattern(self, condition: str) -> list[dict[str, Any]]:
@@ -203,33 +229,29 @@ class KnowledgeGraph:
         if not query_keywords:
             return []
 
-        # Score patterns by keyword overlap
-        scored: list[tuple[float, PatternNode]] = []
-        seen_indices: set[int] = set()
+        # Score candidates by indexed keyword overlap without re-tokenizing every node.
+        scored: list[tuple[float, int, PatternNode]] = []
+        overlap_counts: dict[int, int] = {}
 
         for kw in query_keywords:
             for idx in self._index.get(kw, []):
-                if idx in seen_indices:
-                    continue
-                seen_indices.add(idx)
-                node = self._patterns[idx]
+                overlap_counts[idx] = overlap_counts.get(idx, 0) + 1
 
-                # Score: keyword overlap * confidence * occurrence weight
-                node_keywords = set(self._extract_keywords(node.condition))
-                overlap = len(query_keywords & node_keywords)
-                keyword_score = overlap / max(len(query_keywords | node_keywords), 1)
-                occurrence_weight = min(node.occurrences / 10, 1.0)
-                score = keyword_score * node.confidence * (0.5 + 0.5 * occurrence_weight)
-
-                scored.append((score, node))
+        for idx, overlap in overlap_counts.items():
+            node = self._patterns[idx]
+            node_keywords = self._keyword_sets[idx]
+            keyword_score = overlap / max(len(query_keywords | node_keywords), 1)
+            occurrence_weight = min(node.occurrences / 10, 1.0)
+            score = keyword_score * node.confidence * (0.5 + 0.5 * occurrence_weight)
+            scored.append((score, idx, node))
 
         # Sort by score descending
         scored.sort(key=lambda x: x[0], reverse=True)
 
         results = []
-        for score, node in scored:
+        for score, idx, node in scored:
             results.append({
-                "pattern_id": f"pat_{hash(node.condition) & 0xFFFFFFFF:08x}_{self._patterns.index(node)}",
+                "pattern_id": self._pattern_ids[idx],
                 "condition": node.condition,
                 "action": node.action,
                 "outcome": node.outcome,
@@ -249,7 +271,7 @@ class KnowledgeGraph:
         )
         return results
 
-    def get_top_patterns(self, n: int = 5) -> list[dict[str, Any]]:
+    def get_top_patterns(self, n: int | None = None) -> list[dict[str, Any]]:
         """
         Return patterns sorted by historical success rate.
 
@@ -262,17 +284,20 @@ class KnowledgeGraph:
         Returns:
             List of pattern dicts, best first.
         """
+        top_n = n if n is not None else get_default_knowledge_graph_top_n()
+        min_occurrences = get_default_knowledge_graph_min_occurrences()
+
         # Filter: need minimum occurrences
         qualified = [
             p for p in self._patterns
-            if (p.wins + p.losses) >= 3
+            if (p.wins + p.losses) >= min_occurrences
         ]
 
         # Sort by win rate, then by occurrences as tiebreaker
         qualified.sort(key=lambda p: (p.win_rate, p.occurrences), reverse=True)
 
         results = []
-        for node in qualified[:n]:
+        for node in qualified[:top_n]:
             results.append({
                 "condition": node.condition,
                 "action": node.action,
@@ -286,7 +311,7 @@ class KnowledgeGraph:
             })
 
         logger.info(
-            f"[KnowledgeGraph] Top {n} patterns returned "
+            f"[KnowledgeGraph] Top {top_n} patterns returned "
             f"(from {len(qualified)} qualified)"
         )
         return results
@@ -340,6 +365,9 @@ class KnowledgeGraph:
 
         self._patterns.clear()
         self._index.clear()
+        self._keyword_sets.clear()
+        self._pattern_ids.clear()
+        self._pattern_id_to_index.clear()
 
         for p_data in parsed.get("patterns", []):
             node = PatternNode.from_dict(p_data)
@@ -348,6 +376,10 @@ class KnowledgeGraph:
 
             # Rebuild index
             keywords = self._extract_keywords(node.condition)
+            pattern_id = self._make_pattern_id(node.condition, idx)
+            self._keyword_sets.append(set(keywords))
+            self._pattern_ids.append(pattern_id)
+            self._pattern_id_to_index[pattern_id] = idx
             for kw in keywords:
                 self._index.setdefault(kw, []).append(idx)
 
@@ -411,6 +443,12 @@ class KnowledgeGraph:
                 keywords.append(token)
 
         return keywords
+
+    @staticmethod
+    def _make_pattern_id(condition: str, idx: int) -> str:
+        """Create a deterministic pattern identifier."""
+        cond_hash = hashlib.md5(condition.encode("utf-8")).hexdigest()[:8]
+        return f"pat_{cond_hash}_{idx}"
 
     def __len__(self) -> int:
         return len(self._patterns)

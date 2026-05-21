@@ -3,6 +3,8 @@
 from loguru import logger
 from lumibot.entities import Asset
 
+from src.config import get_default_bbands_stop_loss_pct
+
 from .base import BaseStrategy
 
 
@@ -32,13 +34,14 @@ class BBandsStrategy(BaseStrategy):
         (default 1.5).
     """
 
-    STOP_LOSS_PCT = 0.02  # 2 % hard stop
+    STOP_LOSS_PCT = get_default_bbands_stop_loss_pct()
 
     parameters = {
         **BaseStrategy.parameters,
         "bb_period": 20,
         "bb_std_dev": 2.0,
         "volume_factor": 1.5,
+        "stop_loss_pct": get_default_bbands_stop_loss_pct(),
     }
 
     def initialize(self) -> None:
@@ -48,12 +51,17 @@ class BBandsStrategy(BaseStrategy):
         self.vars.bb_period = self.parameters["bb_period"]
         self.vars.bb_std_dev = self.parameters["bb_std_dev"]
         self.vars.volume_factor = self.parameters["volume_factor"]
+        self.vars.stop_loss_pct = self.parameters.get(
+            "stop_loss_pct",
+            get_default_bbands_stop_loss_pct(),
+        )
 
         logger.info(
-            "BBandsStrategy params: period={}, std_dev={}, vol_factor={}",
+            "BBandsStrategy params: period={}, std_dev={}, vol_factor={}, stop_loss_pct={}",
             self.vars.bb_period,
             self.vars.bb_std_dev,
             self.vars.volume_factor,
+            self.vars.stop_loss_pct,
         )
 
     def on_trading_iteration(self) -> None:
@@ -148,7 +156,7 @@ class BBandsStrategy(BaseStrategy):
 
         # ---- EXIT conditions ----
         if has_position:
-            stop_price = self.vars.entry_price * (1 - self.STOP_LOSS_PCT)
+            stop_price = self.vars.entry_price * (1 - self.vars.stop_loss_pct)
             touches_upper = price >= upper
 
             qty = abs(position.quantity)

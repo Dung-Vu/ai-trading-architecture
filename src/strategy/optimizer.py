@@ -24,6 +24,12 @@ from typing import Any, Optional
 import optuna
 from loguru import logger
 
+from src.config import (
+    env_float,
+    get_default_exchange_name,
+    get_default_strategy_optimizer_bbands_param_space,
+    get_default_strategy_optimizer_sma_param_space,
+)
 from .backtest import BacktestRunner
 from .base import BaseStrategy
 
@@ -57,20 +63,10 @@ class ParameterOptimizer:
     """
 
     # Default search space for SMA cross strategies
-    SMA_PARAM_SPACE = {
-        "sma_fast": (10, 50),       # [min, max]
-        "sma_slow": (40, 200),      # [min, max]
-        "rsi_period": (7, 21),      # [min, max]
-        "rsi_overbought": (60, 80), # [min, max]
-        "rsi_oversold": (20, 40),   # [min, max]
-    }
+    SMA_PARAM_SPACE = get_default_strategy_optimizer_sma_param_space()
 
     # Default search space for Bollinger Band strategies
-    BBANDS_PARAM_SPACE = {
-        "bb_period": (10, 40),       # [min, max]
-        "bb_std_dev": (1.5, 3.0),    # [min, max]
-        "volume_factor": (1.0, 2.5), # [min, max]
-    }
+    BBANDS_PARAM_SPACE = get_default_strategy_optimizer_bbands_param_space()
 
     def __init__(
         self,
@@ -78,8 +74,8 @@ class ParameterOptimizer:
         symbol: str,
         start_date: str,
         end_date: str,
-        ccxt_exchange: str = "binance",
-        initial_capital: float = 100_000,
+        ccxt_exchange: Optional[str] = None,
+        initial_capital: Optional[float] = None,
         storage_path: Optional[str] = None,
         results_dir: Optional[str] = None,
     ) -> None:
@@ -87,8 +83,10 @@ class ParameterOptimizer:
         self.symbol = symbol
         self.start_date = start_date
         self.end_date = end_date
-        self.ccxt_exchange = ccxt_exchange
-        self.initial_capital = initial_capital
+        self.ccxt_exchange = ccxt_exchange or get_default_exchange_name()
+        self.initial_capital = (
+            initial_capital if initial_capital is not None else env_float("INITIAL_CAPITAL", 100_000)
+        )
 
         # Optuna storage — SQLite for persistence
         if storage_path:

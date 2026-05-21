@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
-import redis.asyncio as aioredis
+from redis import asyncio as redis_asyncio
 from loguru import logger
+
+from src.config import get_default_redis_url
 
 
 class RedisCache:
@@ -24,9 +26,9 @@ class RedisCache:
         Redis connection URL (e.g. "redis://localhost:6379").
     """
 
-    def __init__(self, url: str = "redis://localhost:6379") -> None:
-        self._url = url
-        self._client: aioredis.Redis | None = None
+    def __init__(self, url: str | None = None) -> None:
+        self._url = url or get_default_redis_url()
+        self._client: redis_asyncio.Redis | None = None
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -35,7 +37,7 @@ class RedisCache:
     async def connect(self) -> None:
         """Create the async Redis connection."""
         try:
-            self._client = aioredis.from_url(
+            self._client = redis_asyncio.from_url(
                 self._url,
                 decode_responses=True,
                 encoding="utf-8",
@@ -57,7 +59,7 @@ class RedisCache:
             finally:
                 self._client = None
 
-    def _require_client(self) -> aioredis.Redis:
+    def _require_client(self) -> redis_asyncio.Redis:
         """Return the client or raise if not connected."""
         if self._client is None:
             raise RuntimeError("RedisCache not connected — call connect() first")

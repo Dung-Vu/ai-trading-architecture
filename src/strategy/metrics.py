@@ -97,6 +97,45 @@ class MetricsCalculator:
         sortino = (mean_excess / downside_dev) * np.sqrt(periods_per_year)
         return float(sortino)
 
+    @staticmethod
+    def calc_trade_pnl_sharpe_ratio(
+        pnls: list[float],
+        risk_free_rate: float = 0.0,
+        periods_per_year: int = 250,
+    ) -> float:
+        """Compute Sharpe ratio directly from a chronological trade-PnL series."""
+        if len(pnls) < 2:
+            return 0.0
+
+        pnl_series = pd.Series(pnls, dtype=float).dropna()
+        if len(pnl_series) < 2:
+            return 0.0
+
+        std = pnl_series.std()
+        if std == 0:
+            return 0.0
+
+        mean_excess = pnl_series.mean() - risk_free_rate / periods_per_year
+        return float((mean_excess / std) * np.sqrt(periods_per_year))
+
+    @staticmethod
+    def calc_trade_pnl_max_drawdown(pnls: list[float]) -> float:
+        """Compute drawdown from cumulative realised PnL, returned as a fraction."""
+        if not pnls:
+            return 0.0
+
+        equity = 0.0
+        peak = 0.0
+        max_drawdown = 0.0
+
+        for pnl in pnls:
+            equity += float(pnl)
+            peak = max(peak, equity)
+            if peak > 0:
+                max_drawdown = max(max_drawdown, (peak - equity) / peak)
+
+        return float(max_drawdown)
+
     # ------------------------------------------------------------------ #
     #  Drawdown
     # ------------------------------------------------------------------ #
@@ -217,7 +256,7 @@ class MetricsCalculator:
     @staticmethod
     def summarize(
         trades: list[dict],
-        equity_curve: pd.Series,
+        equity_curve: Optional[pd.Series],
         risk_free_rate: float = 0.02,
     ) -> dict:
         """Compute all metrics and return them in a single dictionary.
@@ -239,6 +278,9 @@ class MetricsCalculator:
             ``expectancy``, ``total_trades``, ``avg_pnl``,
             ``total_pnl``, ``start_value``, ``end_value``.
         """
+        if equity_curve is None:
+            equity_curve = pd.Series(dtype=float)
+
         returns = equity_curve.pct_change().dropna() if not equity_curve.empty else pd.Series()
 
         pnls = [t.get("pnl", 0) for t in trades]
