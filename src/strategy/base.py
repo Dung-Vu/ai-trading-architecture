@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import abstractmethod
+from threading import RLock
 from typing import Optional
 
 import pandas as pd
@@ -12,6 +13,9 @@ from lumibot.strategies import Strategy
 
 from .indicator_utils import calculate_indicator
 from .mock_runtime import ensure_strategy_runtime_kwargs
+
+
+_BACKTEST_ENV_LOCK = RLock()
 
 
 class BaseStrategy(Strategy):
@@ -40,15 +44,16 @@ class BaseStrategy(Strategy):
 
         kwargs = ensure_strategy_runtime_kwargs(kwargs)
 
-        prev_is_backtesting = os.environ.get("IS_BACKTESTING")
-        os.environ["IS_BACKTESTING"] = "true"
-        try:
-            super().__init__(*args, **kwargs)
-        finally:
-            if prev_is_backtesting is not None:
-                os.environ["IS_BACKTESTING"] = prev_is_backtesting
-            else:
-                os.environ.pop("IS_BACKTESTING", None)
+        with _BACKTEST_ENV_LOCK:
+            prev_is_backtesting = os.environ.get("IS_BACKTESTING")
+            os.environ["IS_BACKTESTING"] = "true"
+            try:
+                super().__init__(*args, **kwargs)
+            finally:
+                if prev_is_backtesting is not None:
+                    os.environ["IS_BACKTESTING"] = prev_is_backtesting
+                else:
+                    os.environ.pop("IS_BACKTESTING", None)
 
     def generate_signal(
         self, price: float, indicators: dict, market_data: dict

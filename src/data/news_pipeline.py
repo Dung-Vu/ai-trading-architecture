@@ -507,8 +507,12 @@ class NewsPipeline:
                     "timestamp": item.get("timestamp", ""),
                 }
 
-                db_writer.write_news(record)
-                saved += 1
+                if db_writer.write_news(record):
+                    saved += 1
+                else:
+                    logger.warning(
+                        f"[NewsPipeline] News persistence rejected for {record['symbol']} {record['url']}"
+                    )
             except Exception as exc:
                 logger.warning(f"[NewsPipeline] Failed to save news item: {exc}")
 

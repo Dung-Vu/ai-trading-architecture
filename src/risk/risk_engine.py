@@ -156,6 +156,7 @@ class RiskEngine:
         Args:
             pnl: P&L to add (can be positive or negative).
         """
+        self._reset_if_new_day()
         self._daily_pnl += pnl
         logger.debug(f"Daily P&L updated: {self._daily_pnl:.2f}")
 

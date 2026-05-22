@@ -151,3 +151,12 @@ class TestRiskEngine:
         status = engine.get_status()
 
         assert status.daily_pnl == 0.0
+
+    def test_update_daily_pnl_resets_before_appending_on_new_day(self, engine):
+        engine.update_daily_pnl(-125.0)
+        engine._last_reset_date = datetime.now(timezone.utc).date() - timedelta(days=1)
+
+        engine.update_daily_pnl(-25.0)
+
+        status = engine.get_status()
+        assert status.daily_pnl == -25.0

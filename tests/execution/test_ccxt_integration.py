@@ -13,6 +13,7 @@ from src.main_full import FullTradingBot
 from src.main_ai import AITradingBot
 from src.risk.kill_switch import KillSwitch
 from src.risk.risk_engine import RiskEngine
+from src.runtime_status import RuntimeFailurePolicy
 
 
 class MockConfig:
@@ -511,6 +512,54 @@ class TestCCXTIntegration:
         assert call_kwargs["symbol"] == "BTC/USDT"
         assert call_kwargs["portfolio"]["total_value"] == 10050.0
         assert call_kwargs["current_positions"]["BTC/USDT"]["quantity"] == 0.2
+
+    @pytest.mark.asyncio
+    async def test_ai_bot_run_debate_records_runtime_status_on_failure(self, mock_config):
+        bot = AITradingBot(
+            config=mock_config,
+            mode="testnet",
+            symbols=["BTC/USDT"],
+        )
+
+        bot._debate_engine = MagicMock()
+        bot._debate_engine.run_debate = MagicMock(side_effect=RuntimeError("boom"))
+        bot._get_portfolio_state = AsyncMock(return_value={
+            "cash": 2500.0,
+            "positions": {},
+            "total_value": 10050.0,
+        })
+
+        result = await bot._run_debate("BTC/USDT", {"price": 50000.0})
+
+        assert result is None
+        assert bot._last_runtime_status.code == "debate_execution_failed"
+        assert bot._last_runtime_status.policy is RuntimeFailurePolicy.RETURN_STATUS
+
+    @pytest.mark.asyncio
+    async def test_full_bot_execute_trade_records_runtime_status_on_exception(self, mock_config):
+        bot = FullTradingBot(
+            config=mock_config,
+            mode="dryrun",
+            symbols=["BTC/USDT"],
+        )
+
+        bot._get_portfolio_state = AsyncMock(return_value={
+            "cash": 10000.0,
+            "positions": {},
+            "total_value": 10000.0,
+        })
+        bot._execute_buy = AsyncMock(side_effect=RuntimeError("boom"))
+
+        result = await bot._execute_trade(
+            symbol="BTC/USDT",
+            action="BUY",
+            price=50000.0,
+            debate_result={},
+        )
+
+        assert result is None
+        assert bot._last_runtime_status.code == "trade_execution_failed"
+        assert bot._last_runtime_status.policy is RuntimeFailurePolicy.RETURN_STATUS
 
     @pytest.mark.asyncio
     async def test_full_bot_setup_delegates_phase_helpers(self, mock_config):

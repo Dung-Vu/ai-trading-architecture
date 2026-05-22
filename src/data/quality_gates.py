@@ -3,7 +3,36 @@
 from __future__ import annotations
 
 import statistics
+from dataclasses import dataclass
+from enum import Enum
+
 from loguru import logger
+
+
+class TradeValidationCode(str, Enum):
+    """Stable reason codes for trade-validation outcomes."""
+
+    OK = "ok"
+    INVALID_PRICE = "invalid_price"
+    LATENCY = "latency_exceeded"
+    SPREAD = "spread_exceeded"
+    PRICE_SPIKE = "price_spike"
+
+
+@dataclass(frozen=True, slots=True)
+class TradeValidationResult:
+    """Typed validation outcome that remains backward-compatible with tuple unpacking."""
+
+    passed: bool
+    reason: str
+    code: TradeValidationCode
+
+    def __iter__(self):
+        yield self.passed
+        yield self.reason
+
+    def __bool__(self) -> bool:
+        return self.passed
 
 
 class QualityGates:
@@ -159,7 +188,7 @@ class QualityGates:
         trade_data: dict,
         receipt_ts: float,
         recent_prices: list[float],
-    ) -> tuple[bool, str]:
+    ) -> TradeValidationResult:
         """Run all quality gates on a trade.
 
         Checks performed (in order):
@@ -179,36 +208,55 @@ class QualityGates:
 
         Returns
         -------
-        tuple[bool, str]
-            (passed, reason) — passed is True if all gates pass;
-            reason describes the first failure or "OK".
+        TradeValidationResult
+            Typed outcome with a stable reason code.
         """
         symbol = trade_data.get("symbol", "UNKNOWN")
         price = trade_data.get("price")
 
         if price is None or price <= 0:
-            return False, f"Invalid price in trade data: {price}"
+            return TradeValidationResult(
+                passed=False,
+                reason=f"Invalid price in trade data: {price}",
+                code=TradeValidationCode.INVALID_PRICE,
+            )
 
         # 1. Latency check
         if not self.check_latency(receipt_ts):
-            return False, f"Latency exceeded threshold ({self.max_latency_ms}ms)"
+            return TradeValidationResult(
+                passed=False,
+                reason=f"Latency exceeded threshold ({self.max_latency_ms}ms)",
+                code=TradeValidationCode.LATENCY,
+            )
 
         # 2. Spread check (if bid/ask available)
         bid = trade_data.get("bid")
         ask = trade_data.get("ask")
         if bid is not None and ask is not None:
             if not self.check_spread(bid, ask):
-                return False, f"Spread exceeded threshold ({self.max_spread_pct}%)"
+                return TradeValidationResult(
+                    passed=False,
+                    reason=f"Spread exceeded threshold ({self.max_spread_pct}%)",
+                    code=TradeValidationCode.SPREAD,
+                )
 
         # 3. Price spike check
         if not self.check_price_spike(price, recent_prices):
-            return False, (
-                f"Price spike detected for {symbol}: "
-                f"z-score > {self.z_score_threshold}"
+            return TradeValidationResult(
+                passed=False,
+                reason=(
+                    f"Price spike detected for {symbol}: "
+                    f"z-score > {self.z_score_threshold}"
+                ),
+                code=TradeValidationCode.PRICE_SPIKE,
             )
 
         logger.debug(
             f"Trade validation PASSED for {symbol}: "
             f"price={price}, side={trade_data.get('side')}"
         )
-        return True, "OK"
+        return TradeValidationResult(
+            passed=True,
+            reason="OK",
+            code=TradeValidationCode.OK,
+        )

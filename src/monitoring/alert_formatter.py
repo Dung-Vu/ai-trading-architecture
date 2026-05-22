@@ -75,7 +75,7 @@ class AlertFormatter:
                     normalized.append(pos_dict)
                 else:
                     # For format: { "BTC/USDT": 5000 }
-                    normalized.append({"symbol": sym, "value": pos_data, "entry_price": pos_data})
+                    normalized.append({"symbol": sym, "value": pos_data})
         elif isinstance(positions, list):
             for p in positions:
                 if isinstance(p, dict):
@@ -83,6 +83,32 @@ class AlertFormatter:
                 elif isinstance(p, str):
                     normalized.append({"symbol": p})
         return normalized
+
+    @staticmethod
+    def _format_position_line(pos: dict[str, Any]) -> str:
+        """Render a single position line without inventing missing entry prices."""
+        symbol = pos.get("symbol", "?")
+        side = pos.get("side")
+        quantity = pos.get("quantity")
+        entry_price = pos.get("entry_price")
+        value = pos.get("value")
+        pnl = pos.get("pnl", 0.0)
+        pnl_emoji = "🟢" if pnl >= 0 else "🔴"
+
+        line = f"\n  • <code>{symbol}</code>"
+        if side:
+            line += f" {side}"
+
+        if quantity is not None and entry_price is not None:
+            line += f" {quantity} @ ${entry_price:,.2f}"
+        elif quantity is not None:
+            line += f" qty={quantity}"
+
+        if value is not None and entry_price is None:
+            line += f" value=<code>${float(value):,.2f}</code>"
+
+        line += f" {pnl_emoji} <code>${pnl:+,.2f}</code>"
+        return line
 
     @staticmethod
     def format_status(
@@ -121,14 +147,7 @@ class AlertFormatter:
         if positions_list:
             msg += f"\n\n<b>Open Positions ({len(positions_list)})</b>"
             for pos in positions_list:
-                pnl = pos.get("pnl", 0.0)
-                pnl_emoji = "🟢" if pnl >= 0 else "🔴"
-                msg += (
-                    f"\n  • <code>{pos.get('symbol', '?')}</code> "
-                    f"{pos.get('side', '?')} "
-                    f"{pos.get('quantity', 0)} @ ${pos.get('entry_price', 0):,.2f} "
-                    f"{pnl_emoji} <code>${pnl:+,.2f}</code>"
-                )
+                msg += AlertFormatter._format_position_line(pos)
         else:
             msg += "\n\n📭 <b>No open positions</b>"
 
@@ -182,14 +201,7 @@ class AlertFormatter:
         if positions_list:
             msg += f"\n\n<b>Open Positions ({len(positions_list)})</b>"
             for pos in positions_list:
-                pnl = pos.get("pnl", 0.0)
-                pnl_emoji = "🟢" if pnl >= 0 else "🔴"
-                msg += (
-                    f"\n  • <code>{pos.get('symbol', '?')}</code> "
-                    f"{pos.get('side', '?')} "
-                    f"{pos.get('quantity', 0)} @ ${pos.get('entry_price', 0):,.2f} "
-                    f"{pnl_emoji} <code>${pnl:+,.2f}</code>"
-                )
+                msg += AlertFormatter._format_position_line(pos)
 
         return msg
 

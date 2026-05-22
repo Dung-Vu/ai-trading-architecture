@@ -66,7 +66,7 @@ class TradeMemoryAnalyticsMixin:
                     COALESCE(SUM(pnl), 0) as total_pnl,
                     COALESCE(AVG(pnl), 0) as avg_pnl,
                     COALESCE(MAX(pnl), 0) as best_trade,
-                    COALESCE(MAX(pnl) FILTER (WHERE pnl < 0), 0) as worst_trade,
+                    COALESCE(MIN(pnl) FILTER (WHERE pnl < 0), 0) as worst_trade,
                     COALESCE(SUM(pnl) FILTER (WHERE pnl > 0), 0) as gross_profit,
                     COALESCE(ABS(SUM(pnl)) FILTER (WHERE pnl < 0), 0) as gross_loss
                 FROM trades WHERE {where}
@@ -303,18 +303,6 @@ class TradeMemoryAnalyticsMixin:
                 }
 
             # Pattern 5: Risk action outcomes
-            risk_rows = await conn.fetch(
-                """
-                SELECT judge_action,
-                       COUNT(*) as total,
-                       COUNT(*) FILTER (WHERE pnl > 0) as wins,
-                       COALESCE(AVG(pnl), 0) as avg_pnl
-                FROM trades
-                WHERE side = 'SELL' AND pnl != 0 AND judge_action IS NOT NULL
-                GROUP BY judge_action
-                """
-            )
-
             # Note: judge_action stored in debate_result JSONB, need different approach
             # For now, use debates table joined approach
             debate_rows = await conn.fetch(

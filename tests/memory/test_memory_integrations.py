@@ -44,6 +44,12 @@ class _FakeMem0Client:
         return [{"memory_id": memory_id, "score": 0.91, "metadata": metadata}]
 
 
+class _FailingMem0Client(_FakeMem0Client):
+    def add(self, _memory_text, user_id, metadata):
+        del _memory_text, user_id, metadata
+        raise RuntimeError("mem0 add failed")
+
+
 @pytest.mark.asyncio
 async def test_trade_memory_connects_logs_trade_and_caches_latest_trade():
     connection = MagicMock()
@@ -136,3 +142,36 @@ def test_mem0_memory_uses_vector_store_client_for_add_and_search():
     assert results[0]["trade_data"]["symbol"] == "BTC/USDT"
     assert results[0]["debate_action"] == "BUY"
     assert results[0]["similarity_score"] == 0.91
+
+
+def test_mem0_memory_falls_back_after_runtime_add_failure():
+    with patch("src.memory.mem0_memory.MEM0_AVAILABLE", True), patch(
+        "src.memory.mem0_memory.QDRANT_AVAILABLE",
+        True,
+    ), patch(
+        "src.memory.mem0_memory.Mem0Client",
+        _FailingMem0Client,
+    ):
+        memory = Mem0Memory(qdrant_url="http://qdrant:6333")
+
+        memory_id = memory.add_trade_memory(
+            trade={
+                "timestamp": datetime(2026, 5, 20, tzinfo=timezone.utc).isoformat(),
+                "symbol": "BTC/USDT",
+                "side": "BUY",
+                "price": 65000.0,
+                "quantity": 0.1,
+                "indicators": {"rsi": 28},
+                "market_conditions": {"trend": "uptrend", "volume_high": True},
+            },
+            debate={
+                "action": "BUY",
+                "confidence": 84,
+                "reasoning": "Oversold bounce with strong volume.",
+            },
+        )
+        results = memory.query_similar_trades("BTC oversold bounce", limit=1)
+
+    assert memory_id
+    assert memory.get_stats()["store_type"] == "in_memory_fallback"
+    assert results[0]["trade_data"]["symbol"] == "BTC/USDT"

@@ -9,6 +9,9 @@ from typing import Any
 from loguru import logger
 
 from src.bot.full_trading_bot import FullTradingBot
+from src.bot.services import LEAN_AI_BOT_RUNTIME_ATTRS
+from src.debate.runtime import normalize_debate_result, run_debate_round
+from src.runtime_status import RuntimeFailurePolicy, RuntimeStatus
 
 
 class AITradingBot(FullTradingBot):
@@ -21,7 +24,11 @@ class AITradingBot(FullTradingBot):
         strategy: str = "ai_debate",
         symbols: list[str] | None = None,
         interval: int = 60,
+        enable_memory: bool = False,
+        enable_news: bool = False,
+        enable_autotune: bool = False,
     ) -> None:
+        del enable_memory, enable_news, enable_autotune
         super().__init__(
             config=config,
             mode=mode,
@@ -83,19 +90,7 @@ class AITradingBot(FullTradingBot):
 
     async def _cleanup_setup_state(self) -> None:
         """Release partially initialized components after a setup failure."""
-        await self._cleanup_component_attrs(
-            "_telegram_bot",
-            "_weekly_reviewer",
-            "_debate_engine",
-            "_strategies",
-            "_redis_cache",
-            "_order_manager",
-            "_dry_run_executor",
-            "_executor",
-            "_kill_switch",
-            "_risk_engine",
-            "_trade_memory",
-        )
+        await self._cleanup_component_attrs(*LEAN_AI_BOT_RUNTIME_ATTRS)
 
     async def shutdown(self) -> None:
         """Graceful shutdown for the lean AI bot."""
@@ -149,20 +144,24 @@ class AITradingBot(FullTradingBot):
 
         return market_data
 
-    async def _run_debate(
+    async def _run_debate_with_status(
         self,
         symbol: str,
         market_data: dict[str, Any],
         sentiment: dict[str, Any] | None = None,
         kg_context: list[dict[str, Any]] | None = None,
         mem0_context: str = "",
-    ) -> dict[str, Any] | None:
-        """Run debate and return the historical AITradingBot dict shape."""
+    ) -> tuple[dict[str, Any] | None, RuntimeStatus]:
+        """Run debate and return the historical AITradingBot dict shape plus status."""
         del sentiment, kg_context, mem0_context
 
         if self._debate_engine is None:
-            logger.warning(f"[{symbol}] Debate engine not available")
-            return None
+            return None, self._runtime_failure(
+                "debate_engine_unavailable",
+                f"[{symbol}] Debate engine not available",
+                policy=RuntimeFailurePolicy.RETURN_STATUS,
+                log_level="warning",
+            )
 
         try:
             portfolio = await self._get_portfolio_state()
@@ -173,36 +172,44 @@ class AITradingBot(FullTradingBot):
                     **self._positions[symbol],
                 }
 
-            loop = asyncio.get_running_loop()
-            result = await loop.run_in_executor(
-                None,
-                lambda: self._debate_engine.run_debate(
-                    market_data=market_data,
-                    current_positions=current_positions,
-                    portfolio=portfolio,
-                    symbol=symbol,
+            result = await run_debate_round(
+                self._debate_engine,
+                market_data=market_data,
+                current_positions=current_positions,
+                portfolio=portfolio,
+                symbol=symbol,
+            )
+            return (
+                normalize_debate_result(result, include_reason_alias=True),
+                self._runtime_success(
+                    "debate_executed",
+                    f"Debate completed for {symbol}",
                 ),
             )
-
-            if hasattr(result, "model_dump"):
-                return result.model_dump()
-            if hasattr(result, "dict"):
-                return result.dict()
-            return {
-                "action": getattr(result, "action", "HOLD"),
-                "confidence": getattr(result, "confidence", 50.0),
-                "reason": getattr(result, "reason", ""),
-                "reasoning": getattr(result, "reason", ""),
-                "stop_loss": getattr(result, "stop_loss", 0),
-                "take_profit": getattr(result, "take_profit", 0),
-                "bull_argument": getattr(result, "bull_argument", ""),
-                "bear_argument": getattr(result, "bear_argument", ""),
-                "devil_argument": getattr(result, "devil_argument", ""),
-                "risk_decision": getattr(result, "risk_decision", "APPROVE"),
-            }
         except Exception as exc:
-            logger.error(f"[{symbol}] Debate engine error: {exc}")
-            return None
+            return None, self._runtime_failure(
+                "debate_execution_failed",
+                f"[{symbol}] Debate engine error: {exc}",
+                policy=RuntimeFailurePolicy.RETURN_STATUS,
+                log_level="error",
+            )
+
+    async def _run_debate(
+        self,
+        symbol: str,
+        market_data: dict[str, Any],
+        sentiment: dict[str, Any] | None = None,
+        kg_context: list[dict[str, Any]] | None = None,
+        mem0_context: str = "",
+    ) -> dict[str, Any] | None:
+        result, _status = await self._run_debate_with_status(
+            symbol,
+            market_data,
+            sentiment,
+            kg_context,
+            mem0_context,
+        )
+        return result
 
     async def _log_trade_and_debate(
         self,
@@ -246,7 +253,12 @@ class AITradingBot(FullTradingBot):
             }
             await self._trade_memory.log_debate(debate_data)
         except Exception as exc:
-            logger.error(f"Failed to log trade/debate: {exc}")
+            self._runtime_failure(
+                "ai_bot_trade_log_failed",
+                f"Failed to log trade/debate: {exc}",
+                policy=RuntimeFailurePolicy.FALLBACK,
+                log_level="error",
+            )
 
     async def _send_alert(
         self,
@@ -270,7 +282,12 @@ class AITradingBot(FullTradingBot):
                 mode=self.mode,
             )
         except Exception as exc:
-            logger.debug(f"Failed to send Telegram alert: {exc}")
+            self._runtime_failure(
+                "ai_bot_telegram_alert_failed",
+                f"Failed to send Telegram alert: {exc}",
+                policy=RuntimeFailurePolicy.FALLBACK,
+                log_level="debug",
+            )
 
     async def _check_weekly_review(self) -> None:
         """Run weekly review and preserve the AI bot insight logging."""

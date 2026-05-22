@@ -115,7 +115,7 @@ class AutoTuneMetricsMixin:
         return {
             "total_trades": len(trades),
             "winning_trades": len(wins),
-            "losing_trads": len(losses),
+            "losing_trades": len(losses),
             "win_rate": win_rate,
             "total_pnl": round(total_pnl, 2),
             "avg_pnl": round(avg_pnl, 2),

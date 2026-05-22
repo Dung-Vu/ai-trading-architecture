@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Sequence
+
+from loguru import logger
 
 from src.config import (
     get_default_debate_cache_max_entries,
@@ -18,6 +21,87 @@ from src.config import (
 from .debate_engine import DebateEngine
 from .llm_client import LLMClient
 from .models import DebateConfig
+
+
+async def run_debate_round(
+    debate_engine: Any,
+    *,
+    market_data: dict[str, Any],
+    current_positions: dict[str, Any] | None = None,
+    portfolio: dict[str, Any] | None = None,
+    symbol: str = "BTC/USDT",
+) -> Any:
+    """Run a blocking debate engine call in the shared executor path."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        None,
+        lambda: debate_engine.run_debate(
+            market_data=market_data,
+            current_positions=current_positions or {},
+            portfolio=portfolio or {},
+            symbol=symbol,
+        ),
+    )
+
+
+def normalize_debate_result(
+    result: Any,
+    *,
+    include_reason_alias: bool = False,
+    include_round_count: bool = False,
+) -> dict[str, Any]:
+    """Normalize debate-engine outputs into the dict shape expected by bot layers."""
+    if hasattr(result, "model_dump"):
+        raw = result.model_dump()
+    elif hasattr(result, "dict"):
+        raw = result.dict()
+    else:
+        raw = {}
+
+    reasoning = raw.get("reasoning", raw.get("reason", getattr(result, "reason", "")))
+    rounds = raw.get("rounds", getattr(result, "rounds", []))
+
+    normalized = {
+        "action": raw.get("action", getattr(result, "action", "HOLD")),
+        "confidence": raw.get("confidence", getattr(result, "confidence", 50.0)),
+        "reasoning": reasoning,
+        "stop_loss": raw.get("stop_loss", getattr(result, "stop_loss", 0.0)),
+        "take_profit": raw.get("take_profit", getattr(result, "take_profit", 0.0)),
+        "bull_argument": raw.get(
+            "bull_argument",
+            getattr(result, "bull_argument", ""),
+        ),
+        "bear_argument": raw.get(
+            "bear_argument",
+            getattr(result, "bear_argument", ""),
+        ),
+        "devil_argument": raw.get(
+            "devil_argument",
+            getattr(result, "devil_argument", ""),
+        ),
+        "risk_decision": raw.get(
+            "risk_decision",
+            getattr(result, "risk_decision", "APPROVE"),
+        ),
+        "risk_reasoning": raw.get(
+            "risk_reasoning",
+            getattr(result, "risk_reasoning", ""),
+        ),
+    }
+
+    if include_reason_alias:
+        normalized["reason"] = reasoning
+
+    if include_round_count:
+        if isinstance(rounds, list):
+            normalized["rounds"] = len(rounds)
+        elif isinstance(rounds, int):
+            normalized["rounds"] = rounds
+        else:
+            logger.debug(f"Unexpected debate rounds payload type: {type(rounds).__name__}")
+            normalized["rounds"] = 0
+
+    return normalized
 
 
 def build_llm_api_keys(config: Any) -> dict[str, str] | None:

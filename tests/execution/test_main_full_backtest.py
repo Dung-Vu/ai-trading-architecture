@@ -45,8 +45,12 @@ def test_main_backtest_preserves_config_strategy(
         no_news=False,
         no_autotune=False,
         debate_only=False,
+        debate_symbol=None,
         backtest=True,
         backtest_days=30,
+        data_pipeline=False,
+        monitor=False,
+        optimize=False,
     )
     config = MockBacktestConfig()
 
@@ -55,9 +59,9 @@ def test_main_backtest_preserves_config_strategy(
 
     main()
 
-    passed_config, passed_args = mock_run_backtest.call_args.args
-    assert passed_args.backtest_days == 30
-    assert passed_config.strategy.name == "bbands"
+    assert mock_run_backtest.call_args.args == (config,)
+    assert mock_run_backtest.call_args.kwargs == {"days": 30}
+    assert config.strategy.name == "bbands"
     mock_setup_logging.assert_called_once_with(
         log_level="INFO",
         app_log_name="full_trading",

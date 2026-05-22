@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import urllib.parse
 import urllib.request
+from datetime import datetime
 
 from loguru import logger
 from questdb.ingress import Sender
@@ -60,6 +61,17 @@ CREATE TABLE IF NOT EXISTS ticker_latest (
 ) TIMESTAMP(ts) PARTITION BY DAY DEDUP UPSERT KEYS(symbol, exchange);
 """
 
+    _DDL_NEWS = """\
+CREATE TABLE IF NOT EXISTS news (
+    symbol SYMBOL,
+    source SYMBOL,
+    title STRING,
+    url STRING,
+    content_snippet STRING,
+    sentiment_score DOUBLE
+) TIMESTAMP(ts) PARTITION BY DAY;
+"""
+
     def __init__(
         self,
         addr: str | None = None,
@@ -100,7 +112,12 @@ CREATE TABLE IF NOT EXISTS ticker_latest (
 
     def _ensure_tables(self) -> None:
         """Execute DDL statements to create tables if they don't exist."""
-        for ddl in (self._DDL_TRADES, self._DDL_OHLCV, self._DDL_TICKER):
+        for ddl in (
+            self._DDL_TRADES,
+            self._DDL_OHLCV,
+            self._DDL_TICKER,
+            self._DDL_NEWS,
+        ):
             try:
                 self._exec_ddl(ddl)
             except Exception:
@@ -127,6 +144,25 @@ CREATE TABLE IF NOT EXISTS ticker_latest (
     # ------------------------------------------------------------------
     # Write operations
     # ------------------------------------------------------------------
+
+    def _coerce_timestamp(self, value: object) -> int | datetime | None:
+        """Convert incoming timestamps into QuestDB sender compatible values."""
+        if value is None or value == "":
+            return None
+
+        if isinstance(value, (int, datetime)):
+            return value
+
+        if isinstance(value, float):
+            return int(value)
+
+        if isinstance(value, str):
+            try:
+                return datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+
+        return None
 
     def write_trade(
         self,
@@ -161,12 +197,24 @@ CREATE TABLE IF NOT EXISTS ticker_latest (
             raise RuntimeError("QuestDBWriter not connected — call connect() first")
 
         try:
-            self._sender.table("trades").symbol("symbol", symbol).symbol("side", side)
-            self._sender.float64("price", price).float64("amount", amount)
-            self._sender.symbol("trade_id", trade_id).symbol("exchange", exchange)
-            self._sender.at(ts_ns)
+            self._sender.row(
+                "trades",
+                symbols={
+                    "symbol": symbol,
+                    "side": side,
+                    "trade_id": trade_id,
+                    "exchange": exchange,
+                },
+                columns={
+                    "price": price,
+                    "amount": amount,
+                },
+                at=ts_ns,
+            )
+            return True
         except Exception:
             logger.exception(f"Failed to write trade: {symbol} {side} {price}")
+            return False
 
     def write_ohlcv(
         self,
@@ -201,13 +249,26 @@ CREATE TABLE IF NOT EXISTS ticker_latest (
             raise RuntimeError("QuestDBWriter not connected — call connect() first")
 
         try:
-            self._sender.table("ohlcv").symbol("symbol", symbol).symbol("interval", interval)
-            self._sender.float64("open", open_).float64("high", high)
-            self._sender.float64("low", low).float64("close", close)
-            self._sender.float64("volume", volume).int64("trades_count", trades_count)
-            self._sender.at(ts_ns)
+            self._sender.row(
+                "ohlcv",
+                symbols={
+                    "symbol": symbol,
+                    "interval": interval,
+                },
+                columns={
+                    "open": open_,
+                    "high": high,
+                    "low": low,
+                    "close": close,
+                    "volume": volume,
+                    "trades_count": trades_count,
+                },
+                at=ts_ns,
+            )
+            return True
         except Exception:
             logger.exception(f"Failed to write OHLCV: {symbol} {interval}")
+            return False
 
     def write_ticker(
         self,
@@ -239,12 +300,50 @@ CREATE TABLE IF NOT EXISTS ticker_latest (
             raise RuntimeError("QuestDBWriter not connected — call connect() first")
 
         try:
-            self._sender.table("ticker_latest").symbol("symbol", symbol)
-            self._sender.float64("bid", bid).float64("ask", ask)
-            self._sender.symbol("exchange", exchange)
-            self._sender.at(ts_ns)
+            self._sender.row(
+                "ticker_latest",
+                symbols={
+                    "symbol": symbol,
+                    "exchange": exchange,
+                },
+                columns={
+                    "bid": bid,
+                    "ask": ask,
+                },
+                at=ts_ns,
+            )
+            return True
         except Exception:
             logger.exception(f"Failed to write ticker: {symbol}")
+            return False
+
+    def write_news(self, record: dict[str, object]) -> bool:
+        """Write a news record to the 'news' table."""
+        if self._sender is None:
+            raise RuntimeError("QuestDBWriter not connected — call connect() first")
+
+        try:
+            at = self._coerce_timestamp(record.get("timestamp"))
+            self._sender.row(
+                "news",
+                symbols={
+                    "symbol": str(record.get("symbol", "")),
+                    "source": str(record.get("source", "")),
+                },
+                columns={
+                    "title": str(record.get("title", "")),
+                    "url": str(record.get("url", "")),
+                    "content_snippet": str(record.get("content_snippet", "")),
+                    "sentiment_score": float(record.get("sentiment_score", 0.0)),
+                },
+                at=at,
+            )
+            return True
+        except Exception:
+            logger.exception(
+                f"Failed to write news item: {record.get('symbol', '')} {record.get('url', '')}"
+            )
+            return False
 
     # ------------------------------------------------------------------
     # Flush & cleanup

@@ -164,7 +164,7 @@ class AutoTuner(AutoTuneMetricsMixin, AutoTuneOptimizerMixin):
             return True
 
         wr_drop = historical_metrics["win_rate"] - recent_metrics["win_rate"]
-        if wr_drop > (1 - self.WIN_RATE_DECAY_THRESHOLD):
+        if wr_drop > self.WIN_RATE_DECAY_THRESHOLD:
             logger.warning(
                 f"Win rate decay: {historical_metrics['win_rate']:.1%} -> "
                 f"{recent_metrics['win_rate']:.1%}"

@@ -5,7 +5,8 @@
       "Bash(codex --version)",
       "Bash(npm install *)",
       "Bash(npm view *)",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(git push *)"
     ]
   }
 }

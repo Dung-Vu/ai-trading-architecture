@@ -8,7 +8,9 @@ from typing import Any, TypedDict
 
 from loguru import logger
 
+from src.bot.services import BOT_SERVICE_COMPAT_ATTRS
 from src.bot.trade_executor import DryRunExecutorLike, TradeExecutionMixin
+from src.runtime_status import RuntimeFailurePolicy, RuntimeStatus
 
 
 class StrategyBundle(TypedDict):
@@ -27,6 +29,34 @@ class BaseTradingBot(TradeExecutionMixin):
     - business-rule rejections should return None or False instead of raising.
     """
 
+    def _migrate_service_attrs(self, services: Any) -> None:
+        """Move pre-existing legacy component attrs into the service container."""
+        for attr_name in BOT_SERVICE_COMPAT_ATTRS:
+            if attr_name not in self.__dict__:
+                continue
+            services.set_compat(attr_name, self.__dict__.pop(attr_name))
+
+    def __getattr__(self, name: str) -> Any:
+        """Route legacy runtime component attrs through an attached service container."""
+        services = self.__dict__.get("services")
+        if services is not None and name in BOT_SERVICE_COMPAT_ATTRS:
+            return services.get_compat(name)
+        raise AttributeError(f"{type(self).__name__!s} has no attribute {name!r}")
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        """Preserve legacy attr assignment while storing owned services centrally."""
+        if name == "services" and value is not None:
+            object.__setattr__(self, name, value)
+            self._migrate_service_attrs(value)
+            return
+
+        services = self.__dict__.get("services")
+        if services is not None and name in BOT_SERVICE_COMPAT_ATTRS:
+            self.__dict__.pop(name, None)
+            services.set_compat(name, value)
+            return
+        object.__setattr__(self, name, value)
+
     def _register_signal_handlers(self) -> None:
         """Register OS signal handlers for graceful shutdown."""
 
@@ -40,6 +70,36 @@ class BaseTradingBot(TradeExecutionMixin):
             signal.signal(signal.SIGTERM, _handle_signal)
         except (ValueError, OSError):
             logger.debug("Signal handlers not available (not in main thread)")
+
+    def _record_runtime_status(self, status: RuntimeStatus) -> RuntimeStatus:
+        """Store the last runtime status for callers that need explicit policy checks."""
+        self._last_runtime_status = status
+        return status
+
+    def _runtime_success(self, code: str = "ok", message: str = "") -> RuntimeStatus:
+        """Record a successful runtime integration status."""
+        return self._record_runtime_status(RuntimeStatus.success(code, message))
+
+    def _runtime_failure(
+        self,
+        code: str,
+        message: str,
+        *,
+        policy: RuntimeFailurePolicy = RuntimeFailurePolicy.RETURN_STATUS,
+        log_level: str = "warning",
+        exc: Exception | None = None,
+    ) -> RuntimeStatus:
+        """Record a runtime failure according to the bot's error-handling contract."""
+        log_method = getattr(logger, log_level, logger.warning)
+        log_method(message)
+        status = self._record_runtime_status(
+            RuntimeStatus.failure(code, message, policy=policy)
+        )
+        if policy is RuntimeFailurePolicy.RAISE:
+            if exc is not None:
+                raise exc
+            raise RuntimeError(message)
+        return status
 
 
     def _get_strategy_name(self) -> str:

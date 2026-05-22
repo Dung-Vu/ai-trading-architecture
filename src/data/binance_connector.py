@@ -74,54 +74,45 @@ class BinanceConnector:
             Configured FeedHandler instance (not yet started).
         """
         fh = FeedHandler()
-        feed = Binance(
-            config={
-                # Map Cryptofeed symbol format if needed
-            }
-        )
+        resolved_channels = self._resolved_channels()
+        callbacks = {}
 
-        # Subscribe to requested channels
-        if TRADES in self._resolved_channels():
-            feed.add_feed(
-                Binance(
-                    channels={TRADES: self.config.symbols},
-                    callbacks={TRADES: TradeCallback(self._trade_callback)},
-                )
-            )
+        if TRADES in resolved_channels:
+            callbacks[TRADES] = TradeCallback(self._trade_callback)
             logger.info(f"Subscribed to TRADES: {self.config.symbols}")
 
-        if CANDLES in self._resolved_channels():
-            feed.add_feed(
-                Binance(
-                    channels={CANDLES: self.config.symbols},
-                    callbacks={
-                        CANDLES: CandleCallback(
-                            self._candle_callback,
-                            candle_interval=self.config.candle_interval,
-                        )
-                    },
-                )
+        if CANDLES in resolved_channels:
+            callbacks[CANDLES] = CandleCallback(
+                self._candle_callback,
+                candle_interval=self.config.candle_interval,
             )
             logger.info(
                 f"Subscribed to CANDLES ({self.config.candle_interval}): "
                 f"{self.config.symbols}"
             )
 
-        if TICKER in self._resolved_channels():
-            feed.add_feed(
+        if TICKER in resolved_channels:
+            callbacks[TICKER] = TickerCallback(self._ticker_callback)
+            logger.info(f"Subscribed to TICKER: {self.config.symbols}")
+
+        subscribed_channels = [channel for channel in resolved_channels if channel in callbacks]
+        if subscribed_channels:
+            fh.add_feed(
                 Binance(
-                    channels={TICKER: self.config.symbols},
-                    callbacks={TICKER: TickerCallback(self._ticker_callback)},
+                    symbols=self.config.symbols,
+                    channels=subscribed_channels,
+                    callbacks=callbacks,
                 )
             )
-            logger.info(f"Subscribed to TICKER: {self.config.symbols}")
 
         self._feedhandler = fh
         return fh
 
-    def _resolved_channels(self) -> set[str]:
-        """Return the set of Cryptofeed channel constants to subscribe to."""
-        return {_CHANNEL_MAP[c] for c in self.config.channels if c in _CHANNEL_MAP}
+    def _resolved_channels(self) -> list[str]:
+        """Return unique Cryptofeed channel constants preserving config order."""
+        return list(dict.fromkeys(
+            _CHANNEL_MAP[c] for c in self.config.channels if c in _CHANNEL_MAP
+        ))
 
     # ------------------------------------------------------------------
     # Callbacks
@@ -155,7 +146,7 @@ class BinanceConnector:
             self._update_recent_price(symbol, price)
 
             # Quality gate validation
-            passed, reason = self.quality_gates.validate_trade(
+            validation = self.quality_gates.validate_trade(
                 trade_data={
                     "symbol": symbol,
                     "side": side,
@@ -168,16 +159,17 @@ class BinanceConnector:
                 recent_prices=self._recent_prices.get(symbol, []),
             )
 
-            if not passed:
+            if not validation:
                 logger.warning(
-                    f"Trade rejected by quality gate: {symbol} — {reason}"
+                    f"Trade rejected by quality gate: {symbol} — "
+                    f"{validation.code.value}: {validation.reason}"
                 )
                 return
 
             # Write to QuestDB
             if self.questdb_writer is not None:
                 ts_ns = int(receipt_ts * 1_000_000_000)
-                self.questdb_writer.write_trade(
+                write_ok = self.questdb_writer.write_trade(
                     symbol=symbol,
                     side=side,
                     price=price,
@@ -186,6 +178,8 @@ class BinanceConnector:
                     exchange=exchange,
                     ts_ns=ts_ns,
                 )
+                if not write_ok:
+                    logger.warning(f"QuestDB trade write failed for {symbol} @ {price}")
 
             # Cache in Redis
             if self.redis_cache is not None:
@@ -247,7 +241,7 @@ class BinanceConnector:
 
             # Write to QuestDB
             if self.questdb_writer is not None:
-                self.questdb_writer.write_ohlcv(
+                write_ok = self.questdb_writer.write_ohlcv(
                     symbol=symbol,
                     interval=interval,
                     open_=open_,
@@ -258,10 +252,13 @@ class BinanceConnector:
                     trades_count=int(trades_count),
                     ts_ns=ts_ns,
                 )
-                logger.debug(
-                    f"Wrote OHLCV: {symbol} {interval} "
-                    f"O={open_} H={high} L={low} C={close} V={volume}"
-                )
+                if write_ok:
+                    logger.debug(
+                        f"Wrote OHLCV: {symbol} {interval} "
+                        f"O={open_} H={high} L={low} C={close} V={volume}"
+                    )
+                else:
+                    logger.warning(f"QuestDB OHLCV write failed for {symbol} {interval}")
 
         except Exception:
             logger.exception(f"Error processing candle callback for {candle}")

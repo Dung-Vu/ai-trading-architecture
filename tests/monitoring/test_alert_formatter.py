@@ -53,6 +53,8 @@ class TestAlertFormatter:
         assert "12" in msg
         assert "1.85" in msg
         assert "2.3" in msg
+        assert "value=<code>$5,000.00</code>" in msg
+        assert "@ $5,000.00" not in msg
 
     def test_format_error(self):
         msg = AlertFormatter.format_error("Connection timeout", "data_pipeline")

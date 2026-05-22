@@ -1,4 +1,5 @@
 from pathlib import Path
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -56,3 +57,40 @@ async def test_weekly_optimization_cycle_runs_optimizer_and_persists_results(tmp
     tuner._run_optimizer.assert_called_once()
     tuner._update_debate_prompts.assert_called_once()
     tuner._save_optimized_config.assert_called_once()
+
+
+def test_detect_strategy_decay_triggers_on_win_rate_drop_threshold(tmp_path):
+    async def run_test():
+        tuner = AutoTuner(
+            trade_memory=None,
+            debate_config={"temperature": 0.7},
+            strategy_name="sma_cross",
+            config_dir=str(tmp_path),
+        )
+
+        tuner._fetch_recent_trades = AsyncMock(return_value=_sample_trades(30))
+        tuner._calculate_metrics = MagicMock(
+            side_effect=[
+                {"sharpe_ratio": 1.0, "win_rate": 0.30, "max_drawdown": 0.05},
+                {"sharpe_ratio": 1.0, "win_rate": 0.80, "max_drawdown": 0.05},
+            ]
+        )
+
+        assert await tuner.detect_strategy_decay() is True
+
+    asyncio.run(run_test())
+
+
+def test_calculate_metrics_reports_losing_trades_key(tmp_path):
+    tuner = AutoTuner(
+        trade_memory=None,
+        debate_config={"temperature": 0.7},
+        strategy_name="sma_cross",
+        config_dir=str(tmp_path),
+    )
+
+    metrics = tuner._calculate_metrics(_sample_trades(4))
+
+    assert metrics["winning_trades"] == 2
+    assert metrics["losing_trades"] == 2
+    assert "losing_trads" not in metrics

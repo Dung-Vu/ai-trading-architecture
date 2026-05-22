@@ -1,4 +1,23 @@
-"""Execution module for crypto trading bot."""
+"""Public execution facade.
+
+Read this package root for the order-execution boundary.
+`build_dry_run_executor(config)` is the smallest constructor most callers need.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+
+def build_dry_run_executor(config: Any):
+    """Create the standard dry-run executor from the app config surface."""
+    from .dry_run import DryRunExecutor
+
+    trading = getattr(config, "trading", None)
+    initial_balance = getattr(trading, "initial_capital", None)
+    if initial_balance is None:
+        initial_balance = getattr(config, "initial_capital", 10_000.0)
+    return DryRunExecutor(initial_balance=float(initial_balance or 0.0))
 
 
 def __getattr__(name):
@@ -23,4 +42,5 @@ __all__ = [
     "OrderManager",
     "DryRunExecutor",
     "PositionSizer",
+    "build_dry_run_executor",
 ]

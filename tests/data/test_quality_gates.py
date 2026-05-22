@@ -4,7 +4,10 @@ Unit tests for QualityGates module.
 
 import time
 import pytest
-from src.data.quality_gates import QualityGates
+from src.data.quality_gates import (
+    QualityGates,
+    TradeValidationCode,
+)
 
 
 class TestQualityGates:
@@ -53,3 +56,14 @@ class TestQualityGates:
         approved, reason = gates.validate_trade(trade, time.time() - 1, recent)
         assert approved is False
         assert "spread" in reason.lower()
+
+    def test_validate_trade_returns_reason_code(self, gates):
+        trade = {"symbol": "BTC-USDT", "price": 0.0, "side": "buy"}
+
+        result = gates.validate_trade(trade, time.time() - 1, [50000.0])
+
+        assert result.passed is False
+        assert result.code is TradeValidationCode.INVALID_PRICE
+        approved, reason = result
+        assert approved is False
+        assert "invalid price" in reason.lower()

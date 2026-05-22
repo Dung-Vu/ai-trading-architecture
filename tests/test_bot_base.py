@@ -3,7 +3,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from src.bot.services import BotServices
 from src.bot_base import BaseTradingBot
+from src.runtime_status import RuntimeFailurePolicy
 
 
 class _DummyBot(BaseTradingBot):
@@ -114,3 +116,42 @@ def test_generate_strategy_signal_returns_hold_for_missing_strategy():
         )
 
     assert result == "HOLD"
+
+
+def test_runtime_failure_records_typed_status():
+    bot = _DummyBot()
+
+    status = bot._runtime_failure(
+        "redis_unavailable",
+        "Redis unavailable during fetch",
+        policy=RuntimeFailurePolicy.FALLBACK,
+        log_level="debug",
+    )
+
+    assert not status
+    assert status.code == "redis_unavailable"
+    assert status.policy is RuntimeFailurePolicy.FALLBACK
+    assert bot._last_runtime_status is status
+
+
+def test_runtime_success_records_typed_status():
+    bot = _DummyBot()
+
+    status = bot._runtime_success("debate_executed", "Debate finished")
+
+    assert status
+    assert status.code == "debate_executed"
+    assert bot._last_runtime_status is status
+
+
+def test_service_container_routes_legacy_component_attrs():
+    bot = _DummyBot()
+    bot.services = BotServices()
+
+    cache = SimpleNamespace(close=lambda: None)
+    bot._redis_cache = cache
+    bot._strategies = {"BTC/USDT": {"sma_cross": object(), "bbands": object()}}
+
+    assert bot.services.redis_cache is cache
+    assert bot._redis_cache is cache
+    assert bot.services.strategies == bot._strategies

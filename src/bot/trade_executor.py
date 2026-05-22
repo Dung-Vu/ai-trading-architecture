@@ -11,6 +11,7 @@ from typing import Any, Protocol
 from loguru import logger
 
 from src.config import get_default_quantity_pct
+from src.runtime_status import RuntimeFailurePolicy, RuntimeStatus
 from src.execution.trade_utils import calculate_realized_pnl, is_exit_order_triggered
 from src.shared_utils import normalize_market_symbol
 
@@ -232,7 +233,12 @@ class TradeExecutionMixin:
                 "total_pnl_pct": total_pnl_pct,
             }
         except Exception as exc:
-            logger.error(f"Failed to fetch portfolio state from exchange: {exc}")
+            self._runtime_failure(
+                "portfolio_state_fetch_failed",
+                f"Failed to fetch portfolio state from exchange: {exc}",
+                policy=RuntimeFailurePolicy.FALLBACK,
+                log_level="error",
+            )
             return self._build_default_portfolio_state()
 
     async def _run_risk_check(
@@ -313,7 +319,12 @@ class TradeExecutionMixin:
                 {symbol: current_price},
             )
         except Exception as exc:
-            logger.error(f"Error evaluating dry-run SL/TP for {symbol}: {exc}")
+            self._runtime_failure(
+                "dry_run_exit_evaluation_failed",
+                f"Error evaluating dry-run SL/TP for {symbol}: {exc}",
+                policy=RuntimeFailurePolicy.FALLBACK,
+                log_level="error",
+            )
             return
 
         for trade_result in triggered:
@@ -376,7 +387,12 @@ class TradeExecutionMixin:
     ) -> dict[str, Any] | None:
         """Execute a real/testnet SL/TP close order and normalize the result."""
         if self._order_manager is None:
-            logger.error(f"Cannot execute live SL/TP order for {symbol}: no order manager")
+            self._runtime_failure(
+                "live_exit_order_unavailable",
+                f"Cannot execute live SL/TP order for {symbol}: no order manager",
+                policy=RuntimeFailurePolicy.RETURN_STATUS,
+                log_level="error",
+            )
             return None
 
         side_to_execute = trigger_order["side"]
@@ -398,7 +414,12 @@ class TradeExecutionMixin:
                 ),
             )
         except Exception as exc:
-            logger.error(f"Failed to execute real SL/TP close order on exchange: {exc}")
+            self._runtime_failure(
+                "live_exit_order_failed",
+                f"Failed to execute real SL/TP close order on exchange: {exc}",
+                policy=RuntimeFailurePolicy.RETURN_STATUS,
+                log_level="error",
+            )
             return None
 
         avg_fill_price = float(order.get("average", current_price) or current_price)
@@ -410,7 +431,7 @@ class TradeExecutionMixin:
             filled_qty,
         )
 
-        return {
+        result = {
             "trade_id": order.get("id"),
             "symbol": symbol,
             "side": side_to_execute,
@@ -429,6 +450,11 @@ class TradeExecutionMixin:
             "triggered_by": trigger_order.get("type"),
             "order_info": order,
         }
+        self._runtime_success(
+            "live_exit_order_executed",
+            f"Executed live exit order for {symbol}",
+        )
+        return result
 
     async def _handle_pending_exit_orders(
         self,
@@ -495,7 +521,12 @@ class TradeExecutionMixin:
             precise_quantity = self._order_manager._precision_amount(symbol, quantity)
             return float(precise_quantity)
         except Exception as exc:
-            logger.warning(f"[{symbol}] Failed to apply amount precision: {exc}")
+            self._runtime_failure(
+                "amount_precision_failed",
+                f"[{symbol}] Failed to apply amount precision: {exc}",
+                policy=RuntimeFailurePolicy.FALLBACK,
+                log_level="warning",
+            )
             return 0.0
 
     def _get_open_spot_position(
@@ -534,14 +565,14 @@ class TradeExecutionMixin:
             trade_result["take_profit"] = debate_result.get("take_profit")
         return trade_result
 
-    async def _execute_trade(
+    async def _execute_trade_with_status(
         self,
         symbol: str,
         action: str,
         price: float,
         debate_result: dict[str, Any],
-    ) -> dict[str, Any] | None:
-        """Execute a trade using shared buy/sell helpers."""
+    ) -> tuple[dict[str, Any] | None, RuntimeStatus]:
+        """Execute a trade using shared buy/sell helpers and return a typed status."""
         normalized_action = action.upper()
         portfolio = await self._get_portfolio_state()
 
@@ -562,13 +593,47 @@ class TradeExecutionMixin:
                 )
             else:
                 logger.debug(f"[{symbol}] No execution needed for {normalized_action}")
-                return None
+                return None, self._runtime_failure(
+                    "trade_not_executed",
+                    f"[{symbol}] No execution needed for {normalized_action}",
+                    policy=RuntimeFailurePolicy.FALLBACK,
+                    log_level="debug",
+                )
         except Exception as exc:
-            logger.error(f"[{symbol}] Trade execution failed: {exc}")
-            return None
+            return None, self._runtime_failure(
+                "trade_execution_failed",
+                f"[{symbol}] Trade execution failed: {exc}",
+                policy=RuntimeFailurePolicy.RETURN_STATUS,
+                log_level="error",
+            )
 
-        if trade_result is not None:
-            self._trade_count += 1
+        if trade_result is None:
+            return None, self._runtime_failure(
+                "trade_not_executed",
+                f"[{symbol}] {normalized_action} produced no executable trade",
+                policy=RuntimeFailurePolicy.FALLBACK,
+                log_level="debug",
+            )
+
+        self._trade_count += 1
+        return trade_result, self._runtime_success(
+            "trade_executed",
+            f"Executed {normalized_action} for {symbol}",
+        )
+
+    async def _execute_trade(
+        self,
+        symbol: str,
+        action: str,
+        price: float,
+        debate_result: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        trade_result, _status = await self._execute_trade_with_status(
+            symbol,
+            action,
+            price,
+            debate_result,
+        )
         return trade_result
 
     async def _execute_buy(

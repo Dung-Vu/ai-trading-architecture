@@ -11,6 +11,8 @@ from typing import Any
 from loguru import logger
 
 from src.config import get_default_simulated_base_prices
+from src.debate.runtime import normalize_debate_result, run_debate_round
+from src.runtime_status import RuntimeFailurePolicy, RuntimeStatus
 from src.shared_utils import trim_mapping_size
 
 
@@ -115,7 +117,7 @@ class FullTradingPipelineMixin:
         """Fetch debate inputs and return only actionable debate decisions."""
         sentiment = await self._fetch_sentiment(symbol)
         kg_context, mem0_context = self._build_symbol_memory_context(symbol, indicators)
-        debate_result = await self._run_debate(
+        debate_result, _status = await self._run_debate_with_status(
             symbol,
             market_data,
             sentiment,
@@ -349,15 +351,15 @@ class FullTradingPipelineMixin:
 
         return ""
 
-    async def _run_debate(
+    async def _run_debate_with_status(
         self,
         symbol: str,
         market_data: dict,
         sentiment: dict,
         kg_context: list[dict],
         mem0_context: str,
-    ) -> dict[str, Any] | None:
-        """Run debate engine with full context."""
+    ) -> tuple[dict[str, Any] | None, RuntimeStatus]:
+        """Run debate engine with full context and surface a typed runtime status."""
         # Build enriched market data
         enriched = dict(market_data)
         enriched["news_sentiment"] = sentiment
@@ -367,46 +369,65 @@ class FullTradingPipelineMixin:
         if self._debate_engine:
             try:
                 positions = self._positions.get(symbol, {})
-                loop = asyncio.get_running_loop()
-                result = await loop.run_in_executor(
-                    None,
-                    lambda: self._debate_engine.run_debate(
-                        market_data=enriched,
-                        current_positions={symbol: positions},
-                        portfolio=self._portfolio,
-                        symbol=symbol,
-                    ),
+                result = await run_debate_round(
+                    self._debate_engine,
+                    market_data=enriched,
+                    current_positions={symbol: positions},
+                    portfolio=self._portfolio,
+                    symbol=symbol,
                 )
 
-                return {
-                    "action": result.action,
-                    "confidence": result.confidence,
-                    "reasoning": result.reason,
-                    "stop_loss": result.stop_loss,
-                    "take_profit": result.take_profit,
-                    "risk_decision": result.risk_decision,
-                    "bull_argument": result.bull_argument,
-                    "bear_argument": result.bear_argument,
-                    "devil_argument": result.devil_argument,
-                    "rounds": len(result.rounds),
-                }
+                return (
+                    normalize_debate_result(result, include_round_count=True),
+                    self._runtime_success(
+                        "debate_executed",
+                        f"Debate completed for {symbol}",
+                    ),
+                )
             except Exception as exc:
-                logger.warning(f"Debate engine error: {exc}")
-                return None
+                return None, self._runtime_failure(
+                    "debate_execution_failed",
+                    f"Debate engine error for {symbol}: {exc}",
+                    policy=RuntimeFailurePolicy.RETURN_STATUS,
+                    log_level="warning",
+                )
 
         # Fallback: use strategy signal directly
-        return {
-            "action": market_data.get("signal", "HOLD"),
-            "confidence": 60.0,
-            "reasoning": f"Strategy {self.strategy_name} signal (no debate engine)",
-            "stop_loss": 0,
-            "take_profit": 0,
-            "risk_decision": "APPROVE",
-            "bull_argument": "",
-            "bear_argument": "",
-            "devil_argument": "",
-            "rounds": 0,
-        }
+        return (
+            {
+                "action": market_data.get("signal", "HOLD"),
+                "confidence": 60.0,
+                "reasoning": f"Strategy {self.strategy_name} signal (no debate engine)",
+                "stop_loss": 0,
+                "take_profit": 0,
+                "risk_decision": "APPROVE",
+                "bull_argument": "",
+                "bear_argument": "",
+                "devil_argument": "",
+                "rounds": 0,
+            },
+            self._runtime_success(
+                "debate_engine_fallback",
+                f"Debate engine unavailable for {symbol}; using strategy fallback",
+            ),
+        )
+
+    async def _run_debate(
+        self,
+        symbol: str,
+        market_data: dict,
+        sentiment: dict,
+        kg_context: list[dict],
+        mem0_context: str,
+    ) -> dict[str, Any] | None:
+        result, _status = await self._run_debate_with_status(
+            symbol,
+            market_data,
+            sentiment,
+            kg_context,
+            mem0_context,
+        )
+        return result
 
     async def _log_trade(
         self,
@@ -435,14 +456,24 @@ class FullTradingPipelineMixin:
             try:
                 await self._trade_memory.log_trade(trade_record)
             except Exception as exc:
-                logger.warning(f"Failed to log trade to PostgreSQL: {exc}")
+                self._runtime_failure(
+                    "trade_log_postgres_failed",
+                    f"Failed to log trade to PostgreSQL: {exc}",
+                    policy=RuntimeFailurePolicy.FALLBACK,
+                    log_level="warning",
+                )
 
         # Mem0 semantic memory
         if self._mem0_memory:
             try:
                 self._mem0_memory.add_trade_memory(trade_record, debate_result)
             except Exception as exc:
-                logger.warning(f"Failed to log trade to Mem0: {exc}")
+                self._runtime_failure(
+                    "trade_log_mem0_failed",
+                    f"Failed to log trade to Mem0: {exc}",
+                    policy=RuntimeFailurePolicy.FALLBACK,
+                    log_level="warning",
+                )
 
         # Log debate
         debate_record = {
@@ -461,7 +492,12 @@ class FullTradingPipelineMixin:
             try:
                 await self._trade_memory.log_debate(debate_record)
             except Exception as exc:
-                logger.warning(f"Failed to log debate to PostgreSQL: {exc}")
+                self._runtime_failure(
+                    "debate_log_postgres_failed",
+                    f"Failed to log debate to PostgreSQL: {exc}",
+                    policy=RuntimeFailurePolicy.FALLBACK,
+                    log_level="warning",
+                )
 
     def _update_knowledge_graph(
         self,
@@ -556,4 +592,9 @@ class FullTradingPipelineMixin:
             )
             logger.info(f"  [{symbol}] Telegram alert sent")
         except Exception as exc:
-            logger.warning(f"Failed to send alert: {exc}")
+            self._runtime_failure(
+                "telegram_alert_failed",
+                f"Failed to send alert: {exc}",
+                policy=RuntimeFailurePolicy.FALLBACK,
+                log_level="warning",
+            )

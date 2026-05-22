@@ -25,7 +25,15 @@ Usage:
     ...     symbol="BTC/USDT",
     ... )
     >>> print(result.action, result.confidence)
+
+Public facade:
+    `run_debate(config, market_data, symbol=...) -> dict`
+    lets callers use the debate package without first learning its builders.
 """
+
+from __future__ import annotations
+
+from typing import Any
 
 from .agents import (
     BaseAgent,
@@ -47,6 +55,7 @@ __all__ = [
     # Engine
     "DebateEngine",
     "DebateState",
+    "run_debate",
     # Models
     "DebateConfig",
     "DebateResult",
@@ -64,6 +73,28 @@ __all__ = [
     # Optimizer
     "DSPyOptimizer",
 ]
+
+
+def run_debate(
+    config: Any,
+    market_data: dict[str, Any],
+    *,
+    symbol: str = "BTC/USDT",
+    symbols: list[str] | None = None,
+    current_positions: dict[str, Any] | None = None,
+    portfolio: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Run a debate through the public package facade and return a normalized dict."""
+    from .runtime import build_debate_engine, normalize_debate_result
+
+    engine, _ = build_debate_engine(config, symbols or [symbol])
+    result = engine.run_debate(
+        market_data=market_data,
+        current_positions=current_positions or {},
+        portfolio=portfolio or {},
+        symbol=symbol,
+    )
+    return normalize_debate_result(result, include_reason_alias=True)
 
 
 def __getattr__(name: str):

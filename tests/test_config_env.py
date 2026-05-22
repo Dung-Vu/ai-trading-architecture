@@ -184,3 +184,38 @@ monitoring:
         assert config.redis_url == "redis://alias-redis"
         assert config.questdb_addr == "questdb-alias:9000"
         assert config.monitoring.telegram_enabled is True
+
+
+def test_load_config_preserves_yaml_top_level_without_env_override(tmp_path, monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    monkeypatch.delenv("DATA_REDIS_URL", raising=False)
+    monkeypatch.delenv("LITELLM_MODEL", raising=False)
+    monkeypatch.delenv("NEWS_RSS_FEEDS", raising=False)
+    monkeypatch.delenv("SIMULATED_BASE_PRICES", raising=False)
+
+    config_path = tmp_path / "settings.yaml"
+    config_path.write_text(
+        """
+database_url: postgresql://yaml-db
+redis_url: redis://yaml-redis
+litellm_model: openai/yaml-model
+news_rss_feeds:
+    Example: https://rss.example/feed.xml
+simulated_base_prices:
+    BTC/USDT: 71000.0
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    config = load_config(
+        config_path=str(config_path),
+        env_path=str(tmp_path / ".env"),
+    )
+
+    assert config.database_url == "postgresql://yaml-db"
+    assert config.redis_url == "redis://yaml-redis"
+    assert config.litellm_model == "openai/yaml-model"
+    assert config.news_rss_feeds == {"Example": "https://rss.example/feed.xml"}
+    assert config.simulated_base_prices == {"BTC/USDT": 71000.0}

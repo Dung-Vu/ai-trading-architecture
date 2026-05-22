@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import RLock
 from typing import Any
 
 from loguru import logger
@@ -93,6 +94,7 @@ class Mem0Memory:
         self._qdrant_url = qdrant_url or get_default_qdrant_url()
         self._embedding_model = embedding_model or get_default_mem0_embedding_model()
         self._llm_model = llm_model or get_default_mem0_llm_model()
+        self._mem0_state_lock = RLock()
         self._use_mem0 = MEM0_AVAILABLE and QDRANT_AVAILABLE
         self._mem0_client: Any = None
         self._fallback: _InMemoryStore | None = None
@@ -136,12 +138,42 @@ class Mem0Memory:
                 self._mem0_client = Mem0Client(config=config)
                 logger.info("✅ Mem0Memory initialized with Qdrant vector store")
             except Exception as exc:
-                logger.warning(f"⚠️ Mem0 init failed ({exc}), using in-memory fallback")
-                self._use_mem0 = False
+                self._disable_mem0(
+                    "⚠️ Mem0 init failed, using in-memory fallback",
+                    exc,
+                )
 
-        if not self._use_mem0:
-            self._fallback = _InMemoryStore()
+        if not self._is_mem0_enabled():
+            self._ensure_fallback_store()
             logger.info("✅ Mem0Memory initialized with in-memory fallback store")
+
+    def _is_mem0_enabled(self) -> bool:
+        with self._mem0_state_lock:
+            return self._use_mem0
+
+    def _get_mem0_client(self) -> Any | None:
+        with self._mem0_state_lock:
+            if self._use_mem0 and self._mem0_client is not None:
+                return self._mem0_client
+            return None
+
+    def _ensure_fallback_store(self) -> _InMemoryStore:
+        with self._mem0_state_lock:
+            if self._fallback is None:
+                self._fallback = _InMemoryStore()
+            return self._fallback
+
+    def _disable_mem0(self, message: str, exc: Exception | None = None) -> None:
+        with self._mem0_state_lock:
+            self._use_mem0 = False
+            self._mem0_client = None
+            if self._fallback is None:
+                self._fallback = _InMemoryStore()
+
+        if exc is not None:
+            logger.warning(f"{message} ({exc})")
+        else:
+            logger.warning(message)
 
     # ─── Core Methods ──────────────────────────────────────────────────
 
@@ -200,10 +232,11 @@ class Mem0Memory:
             "_ts": parse_iso_timestamp(timestamp),
         }
 
-        if self._use_mem0 and self._mem0_client:
+        mem0_client = self._get_mem0_client()
+        if mem0_client is not None:
             try:
                 user_id = f"trader_{symbol}"
-                result = self._mem0_client.add(
+                result = mem0_client.add(
                     memory_text,
                     user_id=user_id,
                     metadata=metadata,
@@ -214,12 +247,12 @@ class Mem0Memory:
                 )
                 return str(memory_id)
             except Exception as exc:
-                logger.warning(f"Mem0 add failed: {exc}, falling back to in-memory")
-                self._use_mem0 = False
+                self._disable_mem0("Mem0 add failed, falling back to in-memory", exc)
 
         # Fallback path
-        if self._fallback:
-            memory_id = self._fallback.add(metadata)
+        fallback = self._fallback or self._ensure_fallback_store()
+        if fallback is not None:
+            memory_id = fallback.add(metadata)
             logger.info(
                 f"[Mem0Memory/fallback] Stored memory for {symbol} {side} "
                 f"@ ${trade.get('price', 0):,.2f}"
@@ -250,9 +283,10 @@ class Mem0Memory:
         """
         results: list[dict[str, Any]] = []
 
-        if self._use_mem0 and self._mem0_client:
+        mem0_client = self._get_mem0_client()
+        if mem0_client is not None:
             try:
-                search_results = self._mem0_client.search(
+                search_results = mem0_client.search(
                     query=query,
                     limit=limit * 2,  # Get more to filter
                 )
@@ -315,11 +349,10 @@ class Mem0Memory:
                 return results
 
             except Exception as exc:
-                logger.warning(f"Mem0 search failed: {exc}")
-                self._use_mem0 = False
+                self._disable_mem0("Mem0 search failed, using fallback search", exc)
 
         # Fallback search
-        if self._fallback:
+        if self._fallback is not None:
             raw_results = self._fallback.search(query, limit=limit)
             for mem in raw_results:
                 entry = {
@@ -372,10 +405,11 @@ class Mem0Memory:
         """
         memories: list[dict[str, Any]] = []
 
-        if self._use_mem0 and self._mem0_client:
+        mem0_client = self._get_mem0_client()
+        if mem0_client is not None:
             # Get all memories via a broad search
             try:
-                all_results = self._mem0_client.search(
+                all_results = mem0_client.search(
                     query="trade" if symbol is None else f"trade {symbol}",
                     limit=200,
                 )
@@ -383,10 +417,10 @@ class Mem0Memory:
                     mem = item.get("metadata", {})
                     if symbol is None or mem.get("symbol") == symbol:
                         memories.append(mem)
-            except Exception:
-                self._use_mem0 = False
+            except Exception as exc:
+                self._disable_mem0("Mem0 summary search failed, using fallback", exc)
 
-        if not memories and self._fallback:
+        if not memories and self._fallback is not None:
             memories = self._fallback.get_all(symbol=symbol)
 
         if not memories:
@@ -527,10 +561,11 @@ class Mem0Memory:
             "outcome_timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
-        if self._use_mem0 and self._mem0_client:
+        mem0_client = self._get_mem0_client()
+        if mem0_client is not None:
             try:
                 # Update via Mem0
-                self._mem0_client.update(
+                mem0_client.update(
                     memory_id=memory_id,
                     data=notes,
                 )
@@ -541,11 +576,10 @@ class Mem0Memory:
                 )
                 return True
             except Exception as exc:
-                logger.warning(f"Mem0 update failed: {exc}")
-                self._use_mem0 = False
+                self._disable_mem0("Mem0 update failed, using fallback", exc)
 
         # Fallback update
-        if self._fallback:
+        if self._fallback is not None:
             success = self._fallback.update(memory_id, updates)
             if success:
                 logger.info(
@@ -571,11 +605,12 @@ class Mem0Memory:
         """
         removed = 0
 
-        if self._use_mem0 and self._mem0_client:
+        mem0_client = self._get_mem0_client()
+        if mem0_client is not None:
             try:
                 # Mem0 doesn't have a direct bulk-delete-by-date API,
                 # so we search for old memories and delete individually
-                all_results = self._mem0_client.search(query="trade", limit=500)
+                all_results = mem0_client.search(query="trade", limit=500)
                 cutoff = datetime.now(timezone.utc).timestamp() - days * 86400
 
                 for item in all_results:
@@ -587,7 +622,7 @@ class Mem0Memory:
                         memory_id = item.get("memory_id", item.get("id", ""))
                         if memory_id:
                             try:
-                                self._mem0_client.delete(memory_id=memory_id)
+                                mem0_client.delete(memory_id=memory_id)
                                 removed += 1
                             except Exception as exc:
                                 logger.debug(
@@ -599,10 +634,9 @@ class Mem0Memory:
                 )
                 return removed
             except Exception as exc:
-                logger.warning(f"Mem0 cleanup failed: {exc}")
-                self._use_mem0 = False
+                self._disable_mem0("Mem0 cleanup failed, using fallback", exc)
 
-        if self._fallback:
+        if self._fallback is not None:
             removed = self._fallback.clear_old(days=days)
             logger.info(
                 f"[Mem0Memory/fallback] Cleared {removed} old memories"
@@ -612,13 +646,13 @@ class Mem0Memory:
 
     def get_stats(self) -> dict[str, Any]:
         """Get memory store statistics."""
-        if self._use_mem0:
+        if self._is_mem0_enabled():
             return {
                 "store_type": "mem0_qdrant",
                 "qdrant_url": self._qdrant_url,
                 "status": "connected",
             }
-        elif self._fallback:
+        elif self._fallback is not None:
             return {
                 "store_type": "in_memory_fallback",
                 "memory_count": len(self._fallback),

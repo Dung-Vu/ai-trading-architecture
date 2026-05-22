@@ -1,6 +1,6 @@
 import sys
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -27,10 +27,17 @@ def _make_args(**overrides: object) -> SimpleNamespace:
         "config": None,
         "log_level": "INFO",
         "initial_capital": 10000.0,
+        "interval": 60,
         "backtest": False,
         "backtest_days": 90,
         "data_pipeline": False,
         "monitor": False,
+        "debate_only": False,
+        "debate_symbol": None,
+        "no_memory": False,
+        "no_news": False,
+        "no_autotune": False,
+        "optimize": False,
     }
     args.update(overrides)
     return SimpleNamespace(**args)
@@ -52,6 +59,8 @@ def test_parse_args_accepts_runtime_and_backtest_flags(monkeypatch):
             "--backtest",
             "--backtest-days",
             "21",
+            "--interval",
+            "30",
             "--log-level",
             "DEBUG",
             "--initial-capital",
@@ -66,6 +75,7 @@ def test_parse_args_accepts_runtime_and_backtest_flags(monkeypatch):
     assert args.symbols == ["BTC/USDT", "ETH/USDT"]
     assert args.backtest is True
     assert args.backtest_days == 21
+    assert args.interval == 30
     assert args.log_level == "DEBUG"
     assert args.initial_capital == 25000.0
 
@@ -76,6 +86,11 @@ def test_parse_args_accepts_runtime_and_backtest_flags(monkeypatch):
         (_make_args(data_pipeline=True), "dryrun", "run_data_pipeline"),
         (_make_args(backtest=True, backtest_days=45), "dryrun", "run_backtest"),
         (_make_args(monitor=True), "dryrun", "run_monitor"),
+        (
+            _make_args(debate_only=True, debate_symbol="ETH/USDT"),
+            "dryrun",
+            "run_debate_only",
+        ),
         (_make_args(), "dryrun", "run_dry_run"),
         (_make_args(mode="testnet"), "testnet", "run_trading_bot"),
     ],
@@ -98,25 +113,45 @@ def test_main_routes_to_expected_entrypoint(
     with patch("src.main.run_data_pipeline") as mock_data_pipeline, patch(
         "src.main.run_backtest"
     ) as mock_backtest, patch("src.main.run_monitor") as mock_monitor, patch(
-        "src.main.run_dry_run"
-    ) as mock_dry_run, patch("src.main.run_trading_bot") as mock_trading_bot:
+        "src.main.run_debate_only", new_callable=AsyncMock
+    ) as mock_debate_only, patch("src.main.run_dry_run") as mock_dry_run, patch(
+        "src.main.run_trading_bot"
+    ) as mock_trading_bot:
         app_main.main()
 
     called_targets = {
         "run_data_pipeline": mock_data_pipeline,
         "run_backtest": mock_backtest,
         "run_monitor": mock_monitor,
+        "run_debate_only": mock_debate_only,
         "run_dry_run": mock_dry_run,
         "run_trading_bot": mock_trading_bot,
     }
     for name, mock in called_targets.items():
         if name == expected_target:
-            mock.assert_called_once_with(config)
+            mock.assert_called_once()
         else:
             mock.assert_not_called()
 
     if expected_target == "run_backtest":
         assert config.backtest_days == 45
+        assert mock_backtest.call_args.args == (config,)
+        assert mock_backtest.call_args.kwargs == {"days": 45}
+    elif expected_target == "run_debate_only":
+        assert mock_debate_only.call_args.args == (config,)
+        assert mock_debate_only.call_args.kwargs == {"symbol": "ETH/USDT"}
+    elif expected_target in {"run_dry_run", "run_trading_bot"}:
+        selected_mock = called_targets[expected_target]
+        assert selected_mock.call_args.args == (config,)
+        assert selected_mock.call_args.kwargs["strategy"] == config.strategy.name
+        assert selected_mock.call_args.kwargs["symbols"] == config.trading.symbols
+        assert selected_mock.call_args.kwargs["interval"] == 60
+        assert selected_mock.call_args.kwargs["enable_memory"] is True
+        assert selected_mock.call_args.kwargs["enable_news"] is True
+        assert selected_mock.call_args.kwargs["enable_autotune"] is True
+    else:
+        assert called_targets[expected_target].call_args.args == (config,)
+        assert called_targets[expected_target].call_args.kwargs == {}
 
     mock_setup_logging.assert_called_once_with(log_level="INFO")
 
@@ -138,6 +173,8 @@ def test_main_live_mode_warns_before_starting_trading_bot(
     ) as mock_warning:
         app_main.main()
 
-    mock_run_trading_bot.assert_called_once_with(config)
+    mock_run_trading_bot.assert_called_once()
+    assert mock_run_trading_bot.call_args.args == (config,)
+    assert mock_run_trading_bot.call_args.kwargs["strategy"] == "sma_cross"
     assert mock_warning.call_count == 2
     mock_setup_logging.assert_called_once_with(log_level="INFO")

@@ -1,0 +1,17 @@
+{
+  "saved_at": "2026-05-22T16:28:44.700239+00:00",
+  "portfolio": {
+    "cash": 10000.0,
+    "positions": {},
+    "total_value": 10000.0,
+    "initial_balance": 10000.0,
+    "total_pnl": 0.0,
+    "total_pnl_pct": 0.0
+  },
+  "positions": {},
+  "trade_count": 0,
+  "loop_count": 1,
+  "last_autotune": "2026-05-22T16:28:44.697718+00:00",
+  "strategy": "sma_cross",
+  "mode": "dryrun"
+}
