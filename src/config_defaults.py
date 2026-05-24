@@ -32,8 +32,12 @@ DEFAULT_REDIS_URL = "redis://localhost:6379"
 DEFAULT_QUESTDB_HTTP_ADDR = "localhost:9000"
 DEFAULT_QUESTDB_ILP_ADDR = "localhost:9009"
 DEFAULT_QDRANT_URL = "http://localhost:6333"
-DEFAULT_LITELLM_MODEL = "anthropic/claude-sonnet-4"
-DEFAULT_FALLBACK_LLM_MODEL = "openai/gpt-4o"
+DEFAULT_BAILIAN_BASE_URL = "https://coding-intl.dashscope.aliyuncs.com/apps/anthropic"
+DEFAULT_DASHSCOPE_API_BASE = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+DEFAULT_OPENCODE_GO_BASE_URL = "https://opencode.ai/zen/go/v1"
+DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+DEFAULT_LITELLM_MODEL = "bailian/qwen3.6-plus"
+DEFAULT_FALLBACK_LLM_MODEL = "opencode-go/deepseek-v4-pro"
 DEFAULT_DSPY_MODEL = DEFAULT_LITELLM_MODEL
 DEFAULT_DEBATE_MAX_ROUNDS = 3
 DEFAULT_DEBATE_TEMPERATURE = 0.7
@@ -48,7 +52,8 @@ DEFAULT_LLM_CIRCUIT_BREAKER_THRESHOLD = 5
 DEFAULT_LLM_CIRCUIT_BREAKER_RESET_SECONDS = 60.0
 DEFAULT_EXCHANGE_NAME = "binance"
 DEFAULT_MEM0_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-DEFAULT_MEM0_LLM_MODEL = "gpt-4o-mini"
+DEFAULT_MEM0_LLM_PROVIDER = "dashscope"
+DEFAULT_MEM0_LLM_MODEL = "qwen3.6-plus"
 DEFAULT_NEWS_RSS_FEEDS = {
     "CoinDesk": "https://www.coindesk.com/arc/outboundfeeds/rss/",
     "CoinTelegraph": "https://cointelegraph.com/rss",
@@ -111,7 +116,7 @@ DEFAULT_BBANDS_STOP_LOSS_PCT = 0.02
 DEFAULT_QUESTDB_PG_HOST = "localhost"
 DEFAULT_QUESTDB_PG_PORT = 8812
 DEFAULT_QUESTDB_PG_USER = "admin"
-DEFAULT_QUESTDB_PG_PASSWORD = "quest"
+DEFAULT_QUESTDB_PG_PASSWORD = ""
 DEFAULT_WANDB_PROJECT = "ai-trading-architecture"
 DEFAULT_INITIAL_CAPITAL = 10000.0
 
@@ -157,6 +162,28 @@ def get_default_litellm_model() -> str:
 
 def get_default_fallback_litellm_model() -> str:
     return env_str("LITELLM_FALLBACK_MODEL", DEFAULT_FALLBACK_LLM_MODEL)
+
+
+def get_default_bailian_base_url() -> str:
+    return env_str_alias(
+        ("BAILIAN_BASE_URL", "ANTHROPIC_BASE_URL"),
+        DEFAULT_BAILIAN_BASE_URL,
+    )
+
+
+def get_default_dashscope_api_base() -> str:
+    return env_str("DASHSCOPE_API_BASE", DEFAULT_DASHSCOPE_API_BASE)
+
+
+def get_default_opencode_go_base_url() -> str:
+    return env_str_alias(
+        ("OPENCODE_GO_BASE_URL", "OPENCODE_BASE_URL"),
+        DEFAULT_OPENCODE_GO_BASE_URL,
+    )
+
+
+def get_default_deepseek_base_url() -> str:
+    return env_str("DEEPSEEK_BASE_URL", DEFAULT_DEEPSEEK_BASE_URL)
 
 
 def get_default_dspy_model() -> str:
@@ -225,6 +252,10 @@ def get_default_exchange_name() -> str:
 
 def get_default_mem0_embedding_model() -> str:
     return env_str("MEM0_EMBEDDING_MODEL", DEFAULT_MEM0_EMBEDDING_MODEL)
+
+
+def get_default_mem0_llm_provider() -> str:
+    return env_str("MEM0_LLM_PROVIDER", DEFAULT_MEM0_LLM_PROVIDER)
 
 
 def get_default_mem0_llm_model() -> str:

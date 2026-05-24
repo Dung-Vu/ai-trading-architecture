@@ -129,7 +129,7 @@ python -m src.main_ai --mode dryrun --strategy ai_debate --optimize
 from src.debate import DebateEngine, DebateConfig
 from src.debate.llm_client import LLMClient
 
-llm = LLMClient(model="anthropic/claude-sonnet-4")
+llm = LLMClient(model="bailian/qwen3.6-plus")
 config = DebateConfig(max_rounds=3, symbols=["BTC/USDT"])
 engine = DebateEngine(config, llm)
 
@@ -176,7 +176,7 @@ async with TradeMemory() as memory:
     optimizer = DSPyOptimizer(
         trade_memory=memory,
         debate_config=DebateConfig(),
-        llm_model="anthropic/claude-sonnet-4",
+        llm_model="bailian/qwen3.6-plus",
     )
 
     # Setup and optimize

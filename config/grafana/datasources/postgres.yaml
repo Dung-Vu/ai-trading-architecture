@@ -5,11 +5,11 @@ datasources:
     type: postgres
     uid: postgres
     access: proxy
-    url: trading-postgres:5432
+    url: postgres:5432
     database: trading_db
     user: trading_user
     secureJsonData:
-      password: ${POSTGRES_PASSWORD:-trading_pass}
+      password: ${POSTGRES_PASSWORD}
     jsonData:
       postgresVersion: 1500
       timescaledb: false

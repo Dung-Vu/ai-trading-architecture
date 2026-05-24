@@ -5,11 +5,11 @@ datasources:
     type: postgres
     uid: questdb
     access: proxy
-    url: localhost:8812
+    url: questdb:8812
     database: qdb
     user: admin
     secureJsonData:
-      password: quest
+      password: ${QUESTDB_PG_PASSWORD}
     jsonData:
       postgresVersion: 1200
       timescaledb: false

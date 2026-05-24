@@ -35,17 +35,17 @@ def render(_ctx: DashboardContext) -> None:
             st.selectbox(
                 "Primary LLM Model",
                 [
-                    "anthropic/claude-sonnet-4",
-                    "openai/gpt-4o",
-                    "google/gemini-2.5-pro",
+                    "bailian/qwen3.6-plus",
+                    "opencode-go/deepseek-v4-pro",
+                    "dashscope/qwen-plus-latest",
                 ],
             )
             st.selectbox(
                 "Fallback LLM Model",
                 [
-                    "openai/gpt-4o",
-                    "anthropic/claude-sonnet-4",
-                    "google/gemini-2.5-pro",
+                    "opencode-go/deepseek-v4-pro",
+                    "bailian/qwen3.6-plus",
+                    "deepseek/deepseek-v4-pro",
                 ],
             )
             st.slider("LLM Timeout (seconds)", 10, 300, 120, step=10)

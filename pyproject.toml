@@ -65,8 +65,8 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "-v --tb=short"
 filterwarnings = [
-    "ignore:'future.no_silent_downcasting' is deprecated.*:pandas.errors.Pandas4Warning:lumibot\\.entities\\.data",
-    "ignore:'future.no_silent_downcasting' is deprecated.*:pandas.errors.Pandas4Warning:lumibot\\.entities\\.data_polars",
+    "ignore:'future.no_silent_downcasting' is deprecated.*::lumibot\\.entities\\.data",
+    "ignore:'future.no_silent_downcasting' is deprecated.*::lumibot\\.entities\\.data_polars",
     "ignore:websockets\\.legacy is deprecated.*:DeprecationWarning:websockets\\.legacy",
 ]
 

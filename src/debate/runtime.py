@@ -109,12 +109,32 @@ def build_llm_api_keys(config: Any) -> dict[str, str] | None:
     api_keys = {
         provider: key
         for provider, key in {
+            "bailian": getattr(config, "bailian_api_key", ""),
+            "dashscope": getattr(config, "dashscope_api_key", ""),
+            "opencode-go": getattr(config, "opencode_api_key", ""),
+            "deepseek": getattr(config, "deepseek_api_key", ""),
             "openai": getattr(config, "openai_api_key", ""),
-            "anthropic": getattr(config, "anthropic_api_key", ""),
+            "anthropic": getattr(config, "anthropic_api_key", "")
+            or getattr(config, "anthropic_auth_token", ""),
         }.items()
         if key
     }
     return api_keys or None
+
+
+def build_llm_api_bases(config: Any) -> dict[str, str] | None:
+    """Collect configured provider base URLs for LiteLLM routing."""
+    api_bases = {
+        provider: api_base
+        for provider, api_base in {
+            "bailian": getattr(config, "bailian_base_url", ""),
+            "dashscope": getattr(config, "dashscope_api_base", ""),
+            "opencode-go": getattr(config, "opencode_go_base_url", ""),
+            "deepseek": getattr(config, "deepseek_base_url", ""),
+        }.items()
+        if api_base
+    }
+    return api_bases or None
 
 
 def build_debate_engine(
@@ -133,6 +153,12 @@ def build_debate_engine(
         model=llm_model,
         temperature=debate_temperature,
         api_keys=build_llm_api_keys(config),
+        api_bases=build_llm_api_bases(config),
+        fallback_model=getattr(
+            config,
+            "litellm_fallback_model",
+            get_default_fallback_litellm_model(),
+        ),
     )
 
     risk_config = getattr(config, "risk", None)

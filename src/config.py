@@ -88,6 +88,18 @@ class AppConfig:
     anthropic_api_key: str = field(
         default_factory=lambda: env_str("ANTHROPIC_API_KEY", "")
     )
+    anthropic_auth_token: str = field(
+        default_factory=lambda: env_str("ANTHROPIC_AUTH_TOKEN", "")
+    )
+    bailian_api_key: str = field(
+        default_factory=lambda: env_str_alias(
+            ("BAILIAN_API_KEY", "ANTHROPIC_AUTH_TOKEN", "DASHSCOPE_API_KEY"),
+            "",
+        )
+    )
+    dashscope_api_key: str = field(default_factory=lambda: env_str("DASHSCOPE_API_KEY", ""))
+    opencode_api_key: str = field(default_factory=lambda: env_str("OPENCODE_API_KEY", ""))
+    deepseek_api_key: str = field(default_factory=lambda: env_str("DEEPSEEK_API_KEY", ""))
 
     # Database
     redis_url: str = field(default_factory=get_default_redis_url)
@@ -124,6 +136,10 @@ class AppConfig:
     litellm_fallback_model: str = field(
         default_factory=get_default_fallback_litellm_model
     )
+    bailian_base_url: str = field(default_factory=get_default_bailian_base_url)
+    dashscope_api_base: str = field(default_factory=get_default_dashscope_api_base)
+    opencode_go_base_url: str = field(default_factory=get_default_opencode_go_base_url)
+    deepseek_base_url: str = field(default_factory=get_default_deepseek_base_url)
     debate_max_rounds: int = field(default_factory=get_default_debate_max_rounds)
     debate_temperature: float = field(default_factory=get_default_debate_temperature)
     debate_max_tokens: int = field(default_factory=get_default_debate_max_tokens)
@@ -153,6 +169,7 @@ class AppConfig:
     # Runtime defaults
     exchange_name: str = field(default_factory=get_default_exchange_name)
     mem0_embedding_model: str = field(default_factory=get_default_mem0_embedding_model)
+    mem0_llm_provider: str = field(default_factory=get_default_mem0_llm_provider)
     mem0_llm_model: str = field(default_factory=get_default_mem0_llm_model)
     cryptopanic_api_key: str = field(default_factory=get_default_cryptopanic_api_key)
     news_rss_feeds: dict[str, str] = field(default_factory=get_default_news_rss_feeds)
@@ -228,6 +245,17 @@ APP_CONFIG_DEFAULTS: tuple[tuple[str, Any], ...] = (
     ),
     ("openai_api_key", lambda current: env_str("OPENAI_API_KEY", current)),
     ("anthropic_api_key", lambda current: env_str("ANTHROPIC_API_KEY", current)),
+    ("anthropic_auth_token", lambda current: env_str("ANTHROPIC_AUTH_TOKEN", current)),
+    (
+        "bailian_api_key",
+        lambda current: env_str_alias(
+            ("BAILIAN_API_KEY", "ANTHROPIC_AUTH_TOKEN", "DASHSCOPE_API_KEY"),
+            current,
+        ),
+    ),
+    ("dashscope_api_key", lambda current: env_str("DASHSCOPE_API_KEY", current)),
+    ("opencode_api_key", lambda current: env_str("OPENCODE_API_KEY", current)),
+    ("deepseek_api_key", lambda current: env_str("DEEPSEEK_API_KEY", current)),
     ("redis_url", lambda current: env_str_alias(("REDIS_URL", "DATA_REDIS_URL"), current)),
     (
         "questdb_addr",
@@ -255,6 +283,16 @@ APP_CONFIG_DEFAULTS: tuple[tuple[str, Any], ...] = (
         "litellm_fallback_model",
         lambda current: env_str("LITELLM_FALLBACK_MODEL", current),
     ),
+    (
+        "bailian_base_url",
+        lambda current: env_str_alias(("BAILIAN_BASE_URL", "ANTHROPIC_BASE_URL"), current),
+    ),
+    ("dashscope_api_base", lambda current: env_str("DASHSCOPE_API_BASE", current)),
+    (
+        "opencode_go_base_url",
+        lambda current: env_str_alias(("OPENCODE_GO_BASE_URL", "OPENCODE_BASE_URL"), current),
+    ),
+    ("deepseek_base_url", lambda current: env_str("DEEPSEEK_BASE_URL", current)),
     ("debate_max_rounds", lambda current: env_int("DEBATE_MAX_ROUNDS", current)),
     ("debate_temperature", lambda current: env_float("DEBATE_TEMPERATURE", current)),
     ("debate_max_tokens", lambda current: env_int("DEBATE_MAX_TOKENS", current)),
@@ -289,6 +327,7 @@ APP_CONFIG_DEFAULTS: tuple[tuple[str, Any], ...] = (
     ),
     ("exchange_name", lambda current: env_str("EXCHANGE_NAME", current)),
     ("mem0_embedding_model", lambda current: env_str("MEM0_EMBEDDING_MODEL", current)),
+    ("mem0_llm_provider", lambda current: env_str("MEM0_LLM_PROVIDER", current)),
     ("mem0_llm_model", lambda current: env_str("MEM0_LLM_MODEL", current)),
     ("cryptopanic_api_key", lambda current: env_str("CRYPTOPANIC_API_KEY", current)),
     ("news_rss_feeds", lambda current: env_json("NEWS_RSS_FEEDS", current)),

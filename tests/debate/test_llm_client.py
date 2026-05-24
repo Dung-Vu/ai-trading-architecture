@@ -39,6 +39,46 @@ def test_llm_client_uses_provider_specific_api_keys_for_fallbacks(
 
 @patch("src.debate.llm_client.time.sleep", return_value=None)
 @patch("src.debate.llm_client.litellm.completion")
+def test_llm_client_maps_bailian_and_opencode_go_aliases(
+    mock_completion,
+    _mock_sleep,
+):
+    response = MagicMock()
+    response.choices = [SimpleNamespace(message=SimpleNamespace(content="ok"))]
+    response.get.return_value = {}
+    mock_completion.return_value = response
+
+    client = LLMClient(
+        model="bailian/qwen3.6-plus",
+        api_keys={"bailian": "bailian-key"},
+        api_bases={"bailian": "https://coding-intl.dashscope.aliyuncs.com/apps/anthropic"},
+        max_retries=1,
+    )
+
+    assert client.call([{"role": "user", "content": "hello"}]) == "ok"
+    assert mock_completion.call_args.kwargs["model"] == "anthropic/qwen3.6-plus"
+    assert mock_completion.call_args.kwargs["api_key"] == "bailian-key"
+    assert (
+        mock_completion.call_args.kwargs["api_base"]
+        == "https://coding-intl.dashscope.aliyuncs.com/apps/anthropic"
+    )
+
+    mock_completion.reset_mock()
+    client = LLMClient(
+        model="opencode-go/deepseek-v4-pro",
+        api_keys={"opencode-go": "opencode-key"},
+        api_bases={"opencode-go": "https://opencode.ai/zen/go/v1"},
+        max_retries=1,
+    )
+
+    assert client.call([{"role": "user", "content": "hello"}]) == "ok"
+    assert mock_completion.call_args.kwargs["model"] == "openai/deepseek-v4-pro"
+    assert mock_completion.call_args.kwargs["api_key"] == "opencode-key"
+    assert mock_completion.call_args.kwargs["api_base"] == "https://opencode.ai/zen/go/v1"
+
+
+@patch("src.debate.llm_client.time.sleep", return_value=None)
+@patch("src.debate.llm_client.litellm.completion")
 def test_llm_client_caches_identical_requests(
     mock_completion,
     _mock_sleep,

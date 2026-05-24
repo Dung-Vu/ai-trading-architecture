@@ -49,6 +49,7 @@ class LLMClient:
         model: str | None = None,
         temperature: float | None = None,
         api_keys: dict[str, str] | None = None,
+        api_bases: dict[str, str] | None = None,
         fallback_model: str | None = None,
         max_retries: int | None = None,
         max_tokens: int | None = None,
@@ -66,6 +67,7 @@ class LLMClient:
             temperature: Sampling temperature (0.0-1.5).
             api_keys: Optional dict mapping provider names to API keys.
                       Keys are set as environment variables at call time.
+            api_bases: Optional dict mapping provider names to compatible base URLs.
             fallback_model: Secondary model to try if primary fails.
             max_retries: Number of retry attempts per model.
             max_tokens: Maximum tokens in the response.
@@ -115,12 +117,15 @@ class LLMClient:
             else get_default_llm_circuit_breaker_reset_seconds()
         )
         self._api_keys = api_keys or {}
+        self._api_bases = api_bases or {}
         self._response_cache: dict[str, tuple[float, str]] = {}
         self._consecutive_failures = 0
         self._circuit_open_until = 0.0
 
         for provider in self._api_keys:
             logger.debug(f"Configured API key for provider: {provider}")
+        for provider, api_base in self._api_bases.items():
+            logger.debug(f"Configured API base for provider {provider}: {api_base}")
 
         # Cumulative stats
         self.total_tokens_prompt = 0
@@ -176,20 +181,24 @@ class LLMClient:
         last_error: Exception | None = None
 
         for model_id in models_to_try:
+            completion_model_id, provider = self._resolve_model(model_id)
             for attempt in range(self.max_retries):
                 try:
                     start = time.monotonic()
                     kwargs: dict[str, Any] = {
-                        "model": model_id,
+                        "model": completion_model_id,
                         "messages": messages,
                         "temperature": temp,
                         "max_tokens": self.max_tokens,
                         "timeout": self.timeout,
                     }
 
-                    api_key = self._resolve_api_key(model_id)
+                    api_key = self._resolve_api_key(provider, completion_model_id)
                     if api_key:
                         kwargs["api_key"] = api_key
+                    api_base = self._resolve_api_base(provider, completion_model_id)
+                    if api_base:
+                        kwargs["api_base"] = api_base
 
                     # Structured output via response_format
                     if response_format is not None:
@@ -304,10 +313,26 @@ class LLMClient:
             f"{self._consecutive_failures} consecutive failures: {exc}"
         )
 
-    def _resolve_api_key(self, model_id: str) -> str | None:
-        """Return the API key configured for the model's provider."""
+    def _resolve_model(self, model_id: str) -> tuple[str, str]:
+        """Map project provider aliases to LiteLLM-compatible provider IDs."""
         provider = model_id.split("/", 1)[0].lower()
-        return self._api_keys.get(provider)
+        model_name = model_id.split("/", 1)[1] if "/" in model_id else model_id
+
+        if provider == "bailian":
+            return f"anthropic/{model_name}", "bailian"
+        if provider == "opencode-go":
+            return f"openai/{model_name}", "opencode-go"
+        return model_id, provider
+
+    def _resolve_api_key(self, provider: str, completion_model_id: str) -> str | None:
+        """Return the API key configured for the model's provider."""
+        completion_provider = completion_model_id.split("/", 1)[0].lower()
+        return self._api_keys.get(provider) or self._api_keys.get(completion_provider)
+
+    def _resolve_api_base(self, provider: str, completion_model_id: str) -> str | None:
+        """Return the API base configured for provider aliases or native providers."""
+        completion_provider = completion_model_id.split("/", 1)[0].lower()
+        return self._api_bases.get(provider) or self._api_bases.get(completion_provider)
 
     def call_json(
         self,

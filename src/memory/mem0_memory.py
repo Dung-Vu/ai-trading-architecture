@@ -26,9 +26,12 @@ from typing import Any
 from loguru import logger
 from src.config import (
     get_default_mem0_embedding_model,
+    get_default_mem0_llm_provider,
     get_default_mem0_llm_model,
     get_default_qdrant_url,
+    get_default_dashscope_api_base,
 )
+from src.config_env import env_str_alias
 from src.shared_utils import parse_iso_timestamp
 from .fallback_store import _InMemoryStore
 
@@ -82,7 +85,10 @@ class Mem0Memory:
         config_path: str | None = None,
         qdrant_url: str | None = None,
         embedding_model: str | None = None,
+        llm_provider: str | None = None,
         llm_model: str | None = None,
+        llm_api_key: str | None = None,
+        llm_api_base: str | None = None,
     ) -> None:
         """
         Initialize Mem0Memory.
@@ -93,7 +99,16 @@ class Mem0Memory:
         """
         self._qdrant_url = qdrant_url or get_default_qdrant_url()
         self._embedding_model = embedding_model or get_default_mem0_embedding_model()
+        self._llm_provider = llm_provider or get_default_mem0_llm_provider()
         self._llm_model = llm_model or get_default_mem0_llm_model()
+        self._llm_api_key = llm_api_key or env_str_alias(
+            ("MEM0_LLM_API_KEY", "DASHSCOPE_API_KEY", "BAILIAN_API_KEY"),
+            "",
+        )
+        self._llm_api_base = llm_api_base or env_str_alias(
+            ("MEM0_LLM_API_BASE", "DASHSCOPE_API_BASE"),
+            get_default_dashscope_api_base(),
+        )
         self._mem0_state_lock = RLock()
         self._use_mem0 = MEM0_AVAILABLE and QDRANT_AVAILABLE
         self._mem0_client: Any = None
@@ -117,13 +132,17 @@ class Mem0Memory:
                         },
                     },
                     "llm": {
-                        "provider": "openai",
+                        "provider": self._llm_provider,
                         "config": {
                             "model": self._llm_model,
                             "temperature": 0,
                         },
                     },
                 }
+                if self._llm_api_key:
+                    config["llm"]["config"]["api_key"] = self._llm_api_key
+                if self._llm_api_base:
+                    config["llm"]["config"]["api_base"] = self._llm_api_base
 
                 # Load from file if provided
                 if config_path:
@@ -659,4 +678,3 @@ class Mem0Memory:
                 "status": "active",
             }
         return {"store_type": "none", "status": "unavailable"}
-

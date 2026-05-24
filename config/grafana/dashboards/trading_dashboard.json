@@ -325,28 +325,7 @@
   "schemaVersion": 39,
   "tags": ["trading", "crypto", "bot"],
   "templating": {
-    "list": [
-      {
-        "name": "symbol",
-        "type": "query",
-        "datasource": { "type": "questdb", "uid": "questdb" },
-        "query": "SELECT DISTINCT symbol FROM trades ORDER BY symbol",
-        "refresh": 2,
-        "multi": true,
-        "includeAll": true,
-        "current": { "text": "All", "value": "$__all" }
-      },
-      {
-        "name": "strategy",
-        "type": "query",
-        "datasource": { "type": "postgres", "uid": "postgres" },
-        "query": "SELECT DISTINCT strategy_name FROM bot_decisions ORDER BY strategy_name",
-        "refresh": 2,
-        "multi": true,
-        "includeAll": true,
-        "current": { "text": "All", "value": "$__all" }
-      }
-    ]
+    "list": []
   },
   "time": { "from": "now-24h", "to": "now" },
   "timepicker": {

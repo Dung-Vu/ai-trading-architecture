@@ -30,10 +30,15 @@ class QuestDBWriter:
     # DDL statements to ensure tables exist
     _DDL_TRADES = """\
 CREATE TABLE IF NOT EXISTS trades (
+    ts TIMESTAMP,
     symbol SYMBOL,
     side SYMBOL,
     price DOUBLE,
     amount DOUBLE,
+    quantity DOUBLE,
+    pnl DOUBLE,
+    strategy_name SYMBOL,
+    notes STRING,
     trade_id SYMBOL,
     exchange SYMBOL
 ) TIMESTAMP(ts) PARTITION BY HOUR;
@@ -41,6 +46,7 @@ CREATE TABLE IF NOT EXISTS trades (
 
     _DDL_OHLCV = """\
 CREATE TABLE IF NOT EXISTS ohlcv (
+    ts TIMESTAMP,
     symbol SYMBOL,
     interval SYMBOL,
     open DOUBLE,
@@ -54,6 +60,7 @@ CREATE TABLE IF NOT EXISTS ohlcv (
 
     _DDL_TICKER = """\
 CREATE TABLE IF NOT EXISTS ticker_latest (
+    ts TIMESTAMP,
     symbol SYMBOL,
     bid DOUBLE,
     ask DOUBLE,
@@ -63,6 +70,7 @@ CREATE TABLE IF NOT EXISTS ticker_latest (
 
     _DDL_NEWS = """\
 CREATE TABLE IF NOT EXISTS news (
+    ts TIMESTAMP,
     symbol SYMBOL,
     source SYMBOL,
     title STRING,
@@ -208,6 +216,8 @@ CREATE TABLE IF NOT EXISTS news (
                 columns={
                     "price": price,
                     "amount": amount,
+                    "quantity": amount,
+                    "pnl": 0.0,
                 },
                 at=ts_ns,
             )

@@ -34,3 +34,10 @@ data:
     - BTC-USDT
     - ETH-USDT
     - SOL-USDT
+
+litellm_model: bailian/qwen3.6-plus
+litellm_fallback_model: opencode-go/deepseek-v4-pro
+bailian_base_url: https://coding-intl.dashscope.aliyuncs.com/apps/anthropic
+opencode_go_base_url: https://opencode.ai/zen/go/v1
+mem0_llm_provider: dashscope
+mem0_llm_model: qwen3.6-plus

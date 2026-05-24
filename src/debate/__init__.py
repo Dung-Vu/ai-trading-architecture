@@ -17,7 +17,7 @@ Usage:
     >>> from debate import DebateEngine, DebateConfig
     >>> from debate.llm_client import LLMClient
     >>>
-    >>> llm = LLMClient(model="anthropic/claude-sonnet-4")
+    >>> llm = LLMClient(model="bailian/qwen3.6-plus")
     >>> config = DebateConfig(max_rounds=3, symbols=["BTC/USDT"])
     >>> engine = DebateEngine(config, llm)
     >>> result = engine.run_debate(

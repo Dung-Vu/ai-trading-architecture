@@ -28,6 +28,8 @@ from src.config import (
     get_default_database_url,
     get_default_exchange_name,
     get_default_mem0_embedding_model,
+    get_default_mem0_llm_model,
+    get_default_mem0_llm_provider,
     get_default_news_rss_feeds,
     get_default_qdrant_url,
     get_default_redis_url,
@@ -224,6 +226,16 @@ class FullTradingBot(BaseTradingBot):
                     self.config,
                     "mem0_embedding_model",
                     get_default_mem0_embedding_model(),
+                ),
+                llm_provider=getattr(
+                    self.config,
+                    "mem0_llm_provider",
+                    get_default_mem0_llm_provider(),
+                ),
+                llm_model=getattr(
+                    self.config,
+                    "mem0_llm_model",
+                    get_default_mem0_llm_model(),
                 ),
             )
 

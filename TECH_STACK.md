@@ -46,8 +46,10 @@ BINANCE_API_KEY=
 BINANCE_API_SECRET=
 
 # LLM Providers
-OPENAI_API_KEY=
-ANTHROPIC_API_KEY=
+BAILIAN_API_KEY=
+BAILIAN_BASE_URL=https://coding-intl.dashscope.aliyuncs.com/apps/anthropic
+OPENCODE_API_KEY=
+OPENCODE_GO_BASE_URL=https://opencode.ai/zen/go/v1
 
 # Database
 DATABASE_URL=postgresql://user:pass@localhost:5432/trading_db

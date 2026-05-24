@@ -49,6 +49,9 @@ Thumbs.db
 htmlcov/
 *.cover
 
+# Cache
+.ruff_cache/
+
 # Distribution / packaging
 .Python
 develop-eggs/

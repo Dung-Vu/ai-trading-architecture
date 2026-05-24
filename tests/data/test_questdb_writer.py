@@ -30,6 +30,8 @@ def test_write_trade_uses_sender_row_api():
         columns={
             "price": 100000.0,
             "amount": 0.25,
+            "quantity": 0.25,
+            "pnl": 0.0,
         },
         at=123456789,
     )
